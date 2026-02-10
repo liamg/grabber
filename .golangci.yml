@@ -1,0 +1,61 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+formatters:
+  enable:
+    - gofmt
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - gocritic
+    - misspell
+    - bodyclose
+    - noctx
+    - exhaustive
+    - unconvert
+    - unparam
+    - errorlint
+
+  settings:
+    errcheck:
+      exclude-functions:
+        - (io.Closer).Close
+        - (*os.File).Close
+        - (*compress/gzip.Reader).Close
+        - (*archive/zip.ReadCloser).Close
+        - (*github.com/klauspost/compress/zstd.Decoder).Close
+        - (net/http.Response.Body).Close
+        - (*oras.land/oras-go/v2/content/file.Store).Close
+        - os.Remove
+        - os.RemoveAll
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - performance
+      disabled-checks:
+        - ifElseChain
+        - hugeParam
+        - filepathJoin
+    exhaustive:
+      default-signifies-exhaustive: true
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment
+        - shadow
+
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+          - unparam
+          - bodyclose
+          - noctx

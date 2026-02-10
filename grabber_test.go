@@ -1,0 +1,475 @@
+package grabber
+
+import (
+	"archive/zip"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestGrab_FileProtocol_SingleFile(t *testing.T) {
+	srcDir := t.TempDir()
+	srcFile := filepath.Join(srcDir, "hello.txt")
+	os.WriteFile(srcFile, []byte("hello world"), 0o644)
+
+	g := New()
+	dst := filepath.Join(t.TempDir(), "output")
+	err := g.Grab(context.Background(), srcFile, dst)
+	if err != nil {
+		t.Fatalf("Grab: %v", err)
+	}
+
+	assertFile(t, filepath.Join(dst, "hello.txt"), "hello world")
+}
+
+func TestGrab_FileProtocol_Directory(t *testing.T) {
+	srcDir := t.TempDir()
+	os.WriteFile(filepath.Join(srcDir, "a.txt"), []byte("aaa"), 0o644)
+	os.MkdirAll(filepath.Join(srcDir, "sub"), 0o755)
+	os.WriteFile(filepath.Join(srcDir, "sub", "b.txt"), []byte("bbb"), 0o644)
+
+	g := New()
+	dst := filepath.Join(t.TempDir(), "output")
+	err := g.Grab(context.Background(), srcDir, dst)
+	if err != nil {
+		t.Fatalf("Grab: %v", err)
+	}
+
+	assertFile(t, filepath.Join(dst, "a.txt"), "aaa")
+	assertFile(t, filepath.Join(dst, "sub", "b.txt"), "bbb")
+}
+
+func TestGrab_FileProtocol_FileScheme(t *testing.T) {
+	srcDir := t.TempDir()
+	srcFile := filepath.Join(srcDir, "data.txt")
+	os.WriteFile(srcFile, []byte("file scheme"), 0o644)
+
+	g := New()
+	dst := filepath.Join(t.TempDir(), "output")
+	err := g.Grab(context.Background(), "file://"+srcFile, dst)
+	if err != nil {
+		t.Fatalf("Grab: %v", err)
+	}
+
+	assertFile(t, filepath.Join(dst, "data.txt"), "file scheme")
+}
+
+func TestGrab_FileProtocol_DstExists(t *testing.T) {
+	srcDir := t.TempDir()
+	os.WriteFile(filepath.Join(srcDir, "new.txt"), []byte("new content"), 0o644)
+
+	// Pre-create dst with existing content.
+	dst := t.TempDir()
+	os.WriteFile(filepath.Join(dst, "existing.txt"), []byte("existing"), 0o644)
+
+	g := New()
+	err := g.Grab(context.Background(), srcDir, dst)
+	if err != nil {
+		t.Fatalf("Grab: %v", err)
+	}
+
+	// New content should be copied into existing dst.
+	assertFile(t, filepath.Join(dst, "new.txt"), "new content")
+	// Existing file should still be there.
+	assertFile(t, filepath.Join(dst, "existing.txt"), "existing")
+}
+
+func TestGrab_HTTPProtocol(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("http content"))
+	}))
+	defer srv.Close()
+
+	g := New()
+	dst := filepath.Join(t.TempDir(), "output")
+	err := g.Grab(context.Background(), srv.URL+"/file.txt", dst)
+	if err != nil {
+		t.Fatalf("Grab: %v", err)
+	}
+
+	assertFile(t, filepath.Join(dst, "file.txt"), "http content")
+}
+
+func TestGrab_AutoExtract_Disabled(t *testing.T) {
+	// Create a .gz file — if extraction is disabled, it should be copied as-is.
+	srcDir := t.TempDir()
+	srcFile := filepath.Join(srcDir, "data.gz")
+	os.WriteFile(srcFile, []byte("not actually gzip"), 0o644)
+
+	g := New(WithAutoExtract(false))
+	dst := filepath.Join(t.TempDir(), "output")
+	err := g.Grab(context.Background(), srcFile, dst)
+	if err != nil {
+		t.Fatalf("Grab: %v", err)
+	}
+
+	assertFile(t, filepath.Join(dst, "data.gz"), "not actually gzip")
+}
+
+func TestGrab_AutoExtract_ZipFile(t *testing.T) {
+	srcDir := t.TempDir()
+	zipFile := filepath.Join(srcDir, "archive.zip")
+	createTestZip(t, zipFile, map[string]string{
+		"inner.txt": "extracted content",
+	})
+
+	g := New()
+	dst := filepath.Join(t.TempDir(), "output")
+	err := g.Grab(context.Background(), zipFile, dst)
+	if err != nil {
+		t.Fatalf("Grab: %v", err)
+	}
+
+	assertFile(t, filepath.Join(dst, "inner.txt"), "extracted content")
+}
+
+func TestGrab_AutoExtract_HTTPZip(t *testing.T) {
+	// Serve a zip file over HTTP — should be downloaded and auto-extracted.
+	zipDir := t.TempDir()
+	zipFile := filepath.Join(zipDir, "pkg.zip")
+	createTestZip(t, zipFile, map[string]string{
+		"readme.txt": "hello from zip",
+	})
+	zipData, _ := os.ReadFile(zipFile)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/zip")
+		w.Write(zipData)
+	}))
+	defer srv.Close()
+
+	g := New()
+	dst := filepath.Join(t.TempDir(), "output")
+	err := g.Grab(context.Background(), srv.URL+"/pkg.zip", dst)
+	if err != nil {
+		t.Fatalf("Grab: %v", err)
+	}
+
+	assertFile(t, filepath.Join(dst, "readme.txt"), "hello from zip")
+}
+
+func TestGrab_UnsupportedURL(t *testing.T) {
+	g := New()
+	err := g.Grab(context.Background(), "ftp://example.com/file", t.TempDir())
+	if err == nil {
+		t.Fatal("expected error for unsupported URL")
+	}
+}
+
+func TestGrab_ForcePrefix(t *testing.T) {
+	srcDir := t.TempDir()
+	srcFile := filepath.Join(srcDir, "test.txt")
+	os.WriteFile(srcFile, []byte("via prefix"), 0o644)
+
+	g := New()
+	dst := filepath.Join(t.TempDir(), "output")
+	err := g.Grab(context.Background(), "file::"+srcFile, dst)
+	if err != nil {
+		t.Fatalf("Grab: %v", err)
+	}
+
+	assertFile(t, filepath.Join(dst, "test.txt"), "via prefix")
+}
+
+func TestGrab_ForcePrefix_WrongProtocol(t *testing.T) {
+	g := New()
+	err := g.Grab(context.Background(), "s3::https://example.com/file.txt", t.TempDir())
+	if err == nil {
+		t.Fatal("expected error for s3:: prefix with non-S3 URL")
+	}
+}
+
+func TestNew_Defaults(t *testing.T) {
+	g := New()
+	if !g.settings.EnableAutoExtract {
+		t.Error("expected EnableAutoExtract=true by default")
+	}
+	if g.settings.EnableSparseCheckout {
+		t.Error("expected EnableSparseCheckout=false by default")
+	}
+	if len(g.protocols) == 0 {
+		t.Error("expected default protocols to be registered")
+	}
+}
+
+func TestNew_WithOptions(t *testing.T) {
+	g := New(
+		WithSparseCheckout(true),
+		WithAutoExtract(false),
+		WithGitDepth(5),
+		WithAWSCredentials("key", "secret", "token", "us-west-2"),
+		WithOCICredentials("user", "pass"),
+	)
+
+	if !g.settings.EnableSparseCheckout {
+		t.Error("expected EnableSparseCheckout=true")
+	}
+	if g.settings.EnableAutoExtract {
+		t.Error("expected EnableAutoExtract=false")
+	}
+	if g.settings.Git.Depth != 5 {
+		t.Errorf("expected Git.Depth=5, got %d", g.settings.Git.Depth)
+	}
+	if g.settings.AWSCredentials.AccessKeyID != "key" {
+		t.Errorf("expected AWS AccessKeyID=key, got %s", g.settings.AWSCredentials.AccessKeyID)
+	}
+	if g.settings.AWSCredentials.Region != "us-west-2" {
+		t.Errorf("expected AWS Region=us-west-2, got %s", g.settings.AWSCredentials.Region)
+	}
+	if g.settings.OCICredentials.Username != "user" {
+		t.Errorf("expected OCI Username=user, got %s", g.settings.OCICredentials.Username)
+	}
+}
+
+func TestProtocolPriority(t *testing.T) {
+	g := New()
+	for i := 1; i < len(g.protocols); i++ {
+		prev := g.protocols[i-1].Priority()
+		curr := g.protocols[i].Priority()
+		if prev < curr {
+			t.Errorf("protocols not sorted by priority: %s(%d) before %s(%d)",
+				g.protocols[i-1].Prefix(), prev,
+				g.protocols[i].Prefix(), curr)
+		}
+	}
+}
+
+func TestGrab_ChecksumFromURL(t *testing.T) {
+	content := []byte("checksum test content")
+	h := sha256.Sum256(content)
+	checksum := hex.EncodeToString(h[:])
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(content)
+	}))
+	defer srv.Close()
+
+	g := New(WithAutoExtract(false))
+	dst := filepath.Join(t.TempDir(), "output")
+	err := g.Grab(context.Background(), srv.URL+"/file.txt?checksum=sha256:"+checksum, dst)
+	if err != nil {
+		t.Fatalf("Grab: %v", err)
+	}
+
+	assertFile(t, filepath.Join(dst, "file.txt"), string(content))
+}
+
+func TestGrab_ChecksumFromURL_Mismatch(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("actual content"))
+	}))
+	defer srv.Close()
+
+	g := New(WithAutoExtract(false))
+	dst := filepath.Join(t.TempDir(), "output")
+	err := g.Grab(context.Background(), srv.URL+"/file.txt?checksum=sha256:0000000000000000000000000000000000000000000000000000000000000000", dst)
+	if err == nil {
+		t.Fatal("expected checksum mismatch error")
+	}
+}
+
+func TestGrabWithSHA256Checksum_Match(t *testing.T) {
+	content := []byte("explicit checksum content")
+	h := sha256.Sum256(content)
+	checksum := hex.EncodeToString(h[:])
+
+	srcDir := t.TempDir()
+	srcFile := filepath.Join(srcDir, "data.bin")
+	os.WriteFile(srcFile, content, 0o644)
+
+	g := New(WithAutoExtract(false))
+	dst := filepath.Join(t.TempDir(), "output")
+	err := g.GrabWithSHA256Checksum(context.Background(), srcFile, dst, checksum)
+	if err != nil {
+		t.Fatalf("GrabWithSHA256Checksum: %v", err)
+	}
+
+	assertFile(t, filepath.Join(dst, "data.bin"), string(content))
+}
+
+func TestGrabWithSHA256Checksum_Mismatch(t *testing.T) {
+	srcDir := t.TempDir()
+	srcFile := filepath.Join(srcDir, "data.bin")
+	os.WriteFile(srcFile, []byte("some content"), 0o644)
+
+	g := New(WithAutoExtract(false))
+	dst := filepath.Join(t.TempDir(), "output")
+	err := g.GrabWithSHA256Checksum(context.Background(), srcFile, dst, "0000000000000000000000000000000000000000000000000000000000000000")
+	if err == nil {
+		t.Fatal("expected checksum mismatch error")
+	}
+}
+
+func TestGrabWithSHA256Checksum_OverridesURL(t *testing.T) {
+	content := []byte("override test")
+	h := sha256.Sum256(content)
+	correctChecksum := hex.EncodeToString(h[:])
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(content)
+	}))
+	defer srv.Close()
+
+	g := New(WithAutoExtract(false))
+	dst := filepath.Join(t.TempDir(), "output")
+	// URL has a wrong checksum, but explicit is correct — should succeed.
+	err := g.GrabWithSHA256Checksum(context.Background(),
+		srv.URL+"/file.txt?checksum=sha256:0000000000000000000000000000000000000000000000000000000000000000",
+		dst, correctChecksum)
+	if err != nil {
+		t.Fatalf("GrabWithSHA256Checksum: %v", err)
+	}
+}
+
+func TestGrabWithSHA256Checksum(t *testing.T) {
+	content := []byte("sha256 convenience method")
+	h := sha256.Sum256(content)
+	checksum := hex.EncodeToString(h[:])
+
+	srcDir := t.TempDir()
+	srcFile := filepath.Join(srcDir, "data.bin")
+	os.WriteFile(srcFile, content, 0o644)
+
+	g := New(WithAutoExtract(false))
+	dst := filepath.Join(t.TempDir(), "output")
+	err := g.GrabWithSHA256Checksum(context.Background(), srcFile, dst, checksum)
+	if err != nil {
+		t.Fatalf("GrabWithSHA256Checksum: %v", err)
+	}
+
+	assertFile(t, filepath.Join(dst, "data.bin"), string(content))
+}
+
+func TestGrab_ChecksumFromURL_DefaultSHA256(t *testing.T) {
+	content := []byte("default sha256 test")
+	h := sha256.Sum256(content)
+	checksum := hex.EncodeToString(h[:])
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(content)
+	}))
+	defer srv.Close()
+
+	g := New(WithAutoExtract(false))
+	dst := filepath.Join(t.TempDir(), "output")
+	// No "sha256:" prefix — should default to sha256.
+	err := g.Grab(context.Background(), srv.URL+"/file.txt?checksum="+checksum, dst)
+	if err != nil {
+		t.Fatalf("Grab: %v", err)
+	}
+
+	assertFile(t, filepath.Join(dst, "file.txt"), string(content))
+}
+
+func TestGrab_ChecksumOnDirectory_Error(t *testing.T) {
+	srcDir := t.TempDir()
+	os.WriteFile(filepath.Join(srcDir, "a.txt"), []byte("aaa"), 0o644)
+
+	g := New()
+	dst := filepath.Join(t.TempDir(), "output")
+	err := g.Grab(context.Background(), srcDir+"?checksum=sha256:abc123", dst)
+	if err == nil {
+		t.Fatal("expected error for checksum on directory download")
+	}
+}
+
+func TestExtractChecksum(t *testing.T) {
+	tests := []struct {
+		name          string
+		url           string
+		wantURL       string
+		wantAlgorithm string
+		wantExpected  string
+	}{
+		{
+			name:          "sha256 checksum",
+			url:           "https://example.com/file.tar.gz?checksum=sha256:abcdef1234567890",
+			wantURL:       "https://example.com/file.tar.gz",
+			wantAlgorithm: "sha256",
+			wantExpected:  "abcdef1234567890",
+		},
+		{
+			name:    "no checksum",
+			url:     "https://example.com/file.tar.gz",
+			wantURL: "https://example.com/file.tar.gz",
+		},
+		{
+			name:          "checksum with other params",
+			url:           "https://example.com/file.tar.gz?ref=main&checksum=md5:abc123&depth=1",
+			wantURL:       "https://example.com/file.tar.gz?depth=1&ref=main",
+			wantAlgorithm: "md5",
+			wantExpected:  "abc123",
+		},
+		{
+			name:          "with force prefix",
+			url:           "s3::https://example.com/file.tar.gz?checksum=sha512:deadbeef",
+			wantURL:       "s3::https://example.com/file.tar.gz",
+			wantAlgorithm: "sha512",
+			wantExpected:  "deadbeef",
+		},
+		{
+			name:          "no algorithm prefix defaults to sha256",
+			url:           "https://example.com/file.tar.gz?checksum=abcdef1234567890",
+			wantURL:       "https://example.com/file.tar.gz",
+			wantAlgorithm: "sha256",
+			wantExpected:  "abcdef1234567890",
+		},
+		{
+			name:    "empty checksum value",
+			url:     "https://example.com/file.tar.gz?checksum=",
+			wantURL: "https://example.com/file.tar.gz?checksum=",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotURL, gotChecksum := extractChecksum(tt.url)
+			if gotURL != tt.wantURL {
+				t.Errorf("url = %q, want %q", gotURL, tt.wantURL)
+			}
+			if gotChecksum.algorithm != tt.wantAlgorithm {
+				t.Errorf("algorithm = %q, want %q", gotChecksum.algorithm, tt.wantAlgorithm)
+			}
+			if gotChecksum.expected != tt.wantExpected {
+				t.Errorf("expected = %q, want %q", gotChecksum.expected, tt.wantExpected)
+			}
+		})
+	}
+}
+
+// --- helpers ---
+
+func assertFile(t *testing.T, path, expected string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading %s: %v", path, err)
+	}
+	if string(data) != expected {
+		t.Errorf("%s: got %q, want %q", path, string(data), expected)
+	}
+}
+
+func createTestZip(t *testing.T, dst string, files map[string]string) {
+	t.Helper()
+	f, err := os.Create(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+
+	zw := zip.NewWriter(f)
+	for name, content := range files {
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.Write([]byte(content))
+	}
+	zw.Close()
+}
