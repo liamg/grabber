@@ -7,7 +7,7 @@ import (
 
 func WithSparseCheckout(enabled bool) Option {
 	return func(g *Grabber) {
-		g.settings.EnableSparseCheckout = enabled
+		g.settings.Git.SparseCheckout = enabled
 	}
 }
 

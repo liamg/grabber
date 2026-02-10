@@ -12,10 +12,6 @@ var Defaults = Settings{
 }
 
 type Settings struct {
-	// Only fetch the subdirectory specified via // syntax, rather than cloning the entire repo.
-	// Only supported by Git.
-	EnableSparseCheckout bool
-
 	// Automatically detect and extract archives after download (e.g. .tar.gz, .zip).
 	EnableAutoExtract bool
 
@@ -61,6 +57,7 @@ type OCICredentials struct {
 type GitConfig struct {
 	SSHKey                    []byte // private key bytes
 	Depth                     int    // 0 = full clone
+	SparseCheckout            bool   // only fetch the subdirectory specified via // syntax
 	InsecureSkipHostKeyVerify bool   // skip SSH host key verification
 	SSHToHTTPS                bool   // convert SSH/SCP Git URLs to HTTPS before cloning
 }

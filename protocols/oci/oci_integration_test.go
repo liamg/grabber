@@ -254,24 +254,6 @@ func TestOCIIntegration_NonexistentTag(t *testing.T) {
 	}
 }
 
-func TestOCIIntegration_SparseCheckoutError(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
-
-	d := &Downloader{
-		ref:      "localhost:5000/test/repo:latest",
-		registry: "localhost:5000",
-	}
-
-	s := settings.Defaults
-	s.EnableSparseCheckout = true
-	_, err := d.Download(context.Background(), t.TempDir(), s)
-	if err == nil {
-		t.Fatal("expected error for sparse checkout on OCI")
-	}
-}
-
 func assertFileContent(t *testing.T, path, expected string) {
 	t.Helper()
 	data, err := os.ReadFile(path)

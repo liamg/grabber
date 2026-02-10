@@ -110,18 +110,6 @@ func TestDownload_HTTPError(t *testing.T) {
 	}
 }
 
-func TestDownload_SparseCheckoutError(t *testing.T) {
-	d := &Downloader{url: "https://example.com/file.txt"}
-	tmpDir := t.TempDir()
-	s := settings.Defaults
-	s.EnableSparseCheckout = true
-
-	_, err := d.Download(context.Background(), tmpDir, s)
-	if err == nil {
-		t.Error("Download() expected error for sparse checkout")
-	}
-}
-
 func TestDownload_WithHTTPSCredentials(t *testing.T) {
 	var gotAuth string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

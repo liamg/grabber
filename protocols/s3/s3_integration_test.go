@@ -229,23 +229,6 @@ func TestS3Integration_WithCredentials(t *testing.T) {
 	assertFileContent(t, dst, "secret data")
 }
 
-func TestS3Integration_SparseCheckoutError(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
-
-	d := &Downloader{
-		bucket: "test-bucket",
-		key:    "file.txt",
-	}
-
-	s := settings.Settings{EnableSparseCheckout: true}
-	_, err := d.Download(context.Background(), t.TempDir(), s)
-	if err == nil {
-		t.Fatal("expected error for sparse checkout on S3")
-	}
-}
-
 func TestS3Integration_EmptyBucket(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")

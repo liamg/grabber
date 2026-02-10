@@ -193,7 +193,7 @@ type Downloader struct {
 var _ protocols.Downloadable = (*Downloader)(nil)
 
 func (d *Downloader) Download(ctx context.Context, tmpDir string, s settings.Settings) (bool, error) {
-	if s.EnableSparseCheckout && d.subdir == "" {
+	if s.Git.SparseCheckout && d.subdir == "" {
 		return false, errors.New("sparse checkout requires a subdirectory (use // syntax)")
 	}
 

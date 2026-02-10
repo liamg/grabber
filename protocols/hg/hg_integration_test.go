@@ -156,24 +156,6 @@ func TestIntegration_CloneWithSubdir(t *testing.T) {
 	}
 }
 
-func TestIntegration_SparseCheckoutError(t *testing.T) {
-	if !hgAvailable() {
-		t.Skip("hg not available")
-	}
-
-	d := &Downloader{
-		repoURL: "/tmp/fake-repo",
-	}
-
-	s := settings.Defaults
-	s.EnableSparseCheckout = true
-
-	_, err := d.Download(context.Background(), t.TempDir(), s)
-	if err == nil {
-		t.Fatal("expected error for sparse checkout, got nil")
-	}
-}
-
 func TestIntegration_HgNotFound(t *testing.T) {
 	// Override PATH to simulate hg not being available.
 	origPath := os.Getenv("PATH")

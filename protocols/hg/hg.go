@@ -106,10 +106,6 @@ type Downloader struct {
 var _ protocols.Downloadable = (*Downloader)(nil)
 
 func (d *Downloader) Download(ctx context.Context, tmpDir string, s settings.Settings) (bool, error) {
-	if s.EnableSparseCheckout {
-		return false, errors.New("sparse checkout is not supported for Mercurial")
-	}
-
 	if _, err := exec.LookPath("hg"); err != nil {
 		return false, errors.New("hg (Mercurial) executable not found in PATH")
 	}

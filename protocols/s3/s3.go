@@ -142,10 +142,6 @@ type Downloader struct {
 var _ protocols.Downloadable = (*Downloader)(nil)
 
 func (d *Downloader) Download(ctx context.Context, tmpDir string, s settings.Settings) (bool, error) {
-	if s.EnableSparseCheckout {
-		return false, errors.New("sparse checkout is not supported by the S3 protocol")
-	}
-
 	client, err := d.newClient(ctx, s)
 	if err != nil {
 		return false, fmt.Errorf("creating S3 client: %w", err)

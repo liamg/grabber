@@ -204,24 +204,6 @@ func TestGCSIntegration_EmptyBucket(t *testing.T) {
 	}
 }
 
-func TestGCSIntegration_SparseCheckoutError(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
-
-	d := &Downloader{
-		bucket: "test-bucket",
-		key:    "file.txt",
-	}
-
-	s := settings.Defaults
-	s.EnableSparseCheckout = true
-	_, err := d.Download(context.Background(), t.TempDir(), s)
-	if err == nil {
-		t.Fatal("expected error for sparse checkout on GCS")
-	}
-}
-
 func assertFileContent(t *testing.T, path, expected string) {
 	t.Helper()
 	data, err := os.ReadFile(path)

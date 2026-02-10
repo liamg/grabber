@@ -347,7 +347,7 @@ func TestDownload_SparseCheckoutError(t *testing.T) {
 	dst := t.TempDir()
 
 	d := &Downloader{repoURL: bareRepo}
-	s := settings.Settings{EnableSparseCheckout: true}
+	s := settings.Settings{Git: settings.GitConfig{SparseCheckout: true}}
 	_, err := d.Download(context.Background(), dst, s)
 	if err == nil {
 		t.Fatal("expected error for sparse checkout without subdir")

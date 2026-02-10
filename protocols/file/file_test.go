@@ -147,18 +147,6 @@ func TestDownload_NonexistentPath(t *testing.T) {
 	}
 }
 
-func TestDownload_SparseCheckoutError(t *testing.T) {
-	d := &Downloader{path: "/tmp"}
-	tmpDir := t.TempDir()
-	s := settings.Defaults
-	s.EnableSparseCheckout = true
-
-	_, err := d.Download(context.Background(), tmpDir, s)
-	if err == nil {
-		t.Error("Download() expected error for sparse checkout")
-	}
-}
-
 func TestPrefix(t *testing.T) {
 	p := New()
 	if p.Prefix() != "file" {

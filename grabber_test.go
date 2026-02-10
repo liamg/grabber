@@ -189,8 +189,8 @@ func TestNew_Defaults(t *testing.T) {
 	if !g.settings.EnableAutoExtract {
 		t.Error("expected EnableAutoExtract=true by default")
 	}
-	if g.settings.EnableSparseCheckout {
-		t.Error("expected EnableSparseCheckout=false by default")
+	if g.settings.Git.SparseCheckout {
+		t.Error("expected Git.SparseCheckout=false by default")
 	}
 	if len(g.protocols) == 0 {
 		t.Error("expected default protocols to be registered")
@@ -206,8 +206,8 @@ func TestNew_WithOptions(t *testing.T) {
 		WithOCICredentials("user", "pass"),
 	)
 
-	if !g.settings.EnableSparseCheckout {
-		t.Error("expected EnableSparseCheckout=true")
+	if !g.settings.Git.SparseCheckout {
+		t.Error("expected Git.SparseCheckout=true")
 	}
 	if g.settings.EnableAutoExtract {
 		t.Error("expected EnableAutoExtract=false")

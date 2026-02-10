@@ -76,10 +76,6 @@ type Downloader struct {
 var _ protocols.Downloadable = (*Downloader)(nil)
 
 func (d *Downloader) Download(ctx context.Context, tmpDir string, s settings.Settings) (bool, error) {
-	if s.EnableSparseCheckout {
-		return false, errors.New("sparse checkout is not supported by the HTTP protocol")
-	}
-
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, d.url, nil)
 	if err != nil {
 		return false, fmt.Errorf("creating request: %w", err)
