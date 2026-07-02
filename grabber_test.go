@@ -242,6 +242,23 @@ func TestWithOCICredentialForRegistry(t *testing.T) {
 	}
 }
 
+func TestWithNoSystemFallback(t *testing.T) {
+	if g := New(); g.settings.NoSystemFallback {
+		t.Error("expected NoSystemFallback=false by default")
+	}
+	if g := New(WithNoSystemFallback()); !g.settings.NoSystemFallback {
+		t.Error("expected NoSystemFallback=true after WithNoSystemFallback()")
+	}
+}
+
+func TestWithGitKnownHosts(t *testing.T) {
+	kh := []byte("example.com ssh-ed25519 AAAA...")
+	g := New(WithGitKnownHosts(kh))
+	if !bytes.Equal(g.settings.Git.KnownHosts, kh) {
+		t.Errorf("expected KnownHosts to be set, got %q", g.settings.Git.KnownHosts)
+	}
+}
+
 func TestWithGitSSHKeyForHost(t *testing.T) {
 	defaultKey := []byte("default-key")
 	ghKey := []byte("github-key")

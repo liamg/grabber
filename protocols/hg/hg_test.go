@@ -1,8 +1,23 @@
 package hg
 
 import (
+	"context"
+	"strings"
 	"testing"
+
+	"github.com/liamg/grabber/settings"
 )
+
+func TestDownload_NoSystemFallbackDisablesHg(t *testing.T) {
+	d := &Downloader{repoURL: "https://bitbucket.org/user/repo"}
+	_, err := d.Download(context.Background(), t.TempDir(), settings.Settings{NoSystemFallback: true})
+	if err == nil {
+		t.Fatal("expected an error when system fallback is disabled")
+	}
+	if !strings.Contains(err.Error(), "disabled") {
+		t.Errorf("expected a 'disabled' error, got %v", err)
+	}
+}
 
 func TestParseHgURL(t *testing.T) {
 	tests := []struct {

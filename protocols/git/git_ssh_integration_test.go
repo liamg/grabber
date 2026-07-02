@@ -176,6 +176,23 @@ rm -rf /tmp/working
 
 	assertFileContains(t, filepath.Join(dst, "file.txt"), "hello from ssh\n")
 	assertFileContains(t, filepath.Join(dst, "sub/nested.txt"), "nested via ssh\n")
+
+	// End-to-end proof that WithGitKnownHosts is enforced: pin a deliberately
+	// wrong host key for this server. The clone must be rejected as a mismatch
+	// (not allowed through as an unknown host).
+	t.Run("known_hosts mismatch is rejected", func(t *testing.T) {
+		_, wrongHostKey := generateSSHKeyPair(t)
+		d := &Downloader{repoURL: sshURL}
+		s := settings.Settings{
+			Git: settings.GitConfig{
+				SSHKeys:    []settings.SSHCredential{{Key: privateKey}},
+				KnownHosts: append([]byte(host+" "), wrongHostKey...),
+			},
+		}
+		if _, err := d.Download(ctx, t.TempDir(), s); err == nil {
+			t.Fatal("expected clone to be rejected due to host key mismatch")
+		}
+	})
 }
 
 func TestDownload_GitOverSSH_WithSubdir(t *testing.T) {
