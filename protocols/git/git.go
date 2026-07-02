@@ -1,10 +1,13 @@
 package git
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"log"
+	"net"
 	"net/url"
 	"os"
 	"os/exec"
@@ -351,26 +354,40 @@ func (d *Downloader) gitDownload(ctx context.Context, tmpDir string, s settings.
 	return nil
 }
 
+// credentialFillFunc is the system git credential helper, indirected through a
+// package variable so tests can verify it is (or is not) consulted.
+var credentialFillFunc = gitCredentialFill
+
 func (d *Downloader) resolveAuth(ctx context.Context, s settings.Settings) (transport.AuthMethod, error) {
 	// Check for SSH URL.
 	if strings.HasPrefix(d.repoURL, "ssh://") || scpPattern.MatchString(d.repoURL) {
+		hostKeyCallback, err := sshHostKeyCallback(s, sshHost(d.repoURL))
+		if err != nil {
+			return nil, err
+		}
+
 		if key := s.MatchSSHKey(sshHost(d.repoURL)); len(key) > 0 {
 			keys, err := ssh.NewPublicKeys("git", key, "")
 			if err != nil {
 				return nil, fmt.Errorf("parsing SSH key: %w", err)
 			}
-			if s.Git.InsecureSkipHostKeyVerify {
-				keys.HostKeyCallback = cryptossh.InsecureIgnoreHostKey()
+			if hostKeyCallback != nil {
+				keys.HostKeyCallback = hostKeyCallback
 			}
 			return keys, nil
 		}
-		// Fall back to SSH agent.
+
+		// The SSH agent is a system fallback. When it is disabled and no key was
+		// configured, there is no credential to use.
+		if s.NoSystemFallback {
+			return nil, nil
+		}
 		auth, err := ssh.NewSSHAgentAuth("git")
 		if err != nil {
 			return nil, fmt.Errorf("SSH agent auth: %w", err)
 		}
-		if s.Git.InsecureSkipHostKeyVerify {
-			auth.HostKeyCallback = cryptossh.InsecureIgnoreHostKey()
+		if hostKeyCallback != nil {
+			auth.HostKeyCallback = hostKeyCallback
 		}
 		return auth, nil
 	}
@@ -394,13 +411,91 @@ func (d *Downloader) resolveAuth(ctx context.Context, s settings.Settings) (tran
 	}
 
 	// Try the system git credential helper (e.g. osxkeychain, manager-core).
-	if u != nil && (u.Scheme == "https" || u.Scheme == "http") {
-		if auth := gitCredentialFill(ctx, u.Scheme, u.Hostname()); auth != nil {
+	// This is a system fallback and is skipped when disabled.
+	if !s.NoSystemFallback && u != nil && (u.Scheme == "https" || u.Scheme == "http") {
+		if auth := credentialFillFunc(ctx, u.Scheme, u.Hostname()); auth != nil {
 			return auth, nil
 		}
 	}
 
 	return nil, nil
+}
+
+// sshHostKeyCallback selects the SSH host-key verification strategy. A nil
+// callback (with nil error) means "leave go-git's default", which reads
+// ~/.ssh/known_hosts. Precedence:
+//
+//   - InsecureSkipHostKeyVerify → accept any key.
+//   - KnownHosts configured → verify in memory (allow unknown, reject changed).
+//   - system fallback enabled → nil (go-git reads ~/.ssh/known_hosts).
+//   - otherwise (no known hosts, no disk access) → accept any key, with a warning.
+func sshHostKeyCallback(s settings.Settings, host string) (cryptossh.HostKeyCallback, error) {
+	switch {
+	case s.Git.InsecureSkipHostKeyVerify:
+		return cryptossh.InsecureIgnoreHostKey(), nil
+	case len(s.Git.KnownHosts) > 0:
+		return knownHostsCallback(s.Git.KnownHosts)
+	case !s.NoSystemFallback:
+		return nil, nil
+	default:
+		log.Printf("grabber: SSH host key verification disabled for %q "+
+			"(no known_hosts configured and system fallback is off); accepting any host key", host)
+		return cryptossh.InsecureIgnoreHostKey(), nil
+	}
+}
+
+// knownHostsCallback builds an in-memory ssh.HostKeyCallback from known_hosts
+// data. Unknown hosts are allowed; a host recorded with a different key is
+// rejected (detecting key changes / potential MITM). Hashed host entries
+// (|1|...) are not supported and are skipped.
+func knownHostsCallback(knownHosts []byte) (cryptossh.HostKeyCallback, error) {
+	hostKeys := map[string][]cryptossh.PublicKey{}
+
+	rest := knownHosts
+	for len(rest) > 0 {
+		_, hosts, pubKey, _, remaining, err := cryptossh.ParseKnownHosts(rest)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("parsing known_hosts: %w", err)
+		}
+		rest = remaining
+		for _, h := range hosts {
+			if strings.HasPrefix(h, "|") {
+				continue // hashed host entry — unsupported
+			}
+			key := normalizeKnownHost(h)
+			hostKeys[key] = append(hostKeys[key], pubKey)
+		}
+	}
+
+	return func(hostname string, _ net.Addr, key cryptossh.PublicKey) error {
+		keys := hostKeys[normalizeKnownHost(hostname)]
+		if len(keys) == 0 {
+			return nil // unknown host — allow
+		}
+		marshaled := key.Marshal()
+		for _, known := range keys {
+			if bytes.Equal(known.Marshal(), marshaled) {
+				return nil
+			}
+		}
+		return fmt.Errorf("ssh: host key mismatch for %q: the recorded key has changed", hostname)
+	}, nil
+}
+
+// normalizeKnownHost reduces a known_hosts host pattern or a dialed hostname to
+// a bare, lowercased host so the two can be compared. It strips any port and
+// [ ] brackets (e.g. "[example.com]:2222" and "example.com:22" → "example.com").
+func normalizeKnownHost(h string) string {
+	h = strings.ToLower(strings.TrimSpace(h))
+	if host, _, err := net.SplitHostPort(h); err == nil {
+		return host
+	}
+	h = strings.TrimPrefix(h, "[")
+	h = strings.TrimSuffix(h, "]")
+	return h
 }
 
 // gitCredentialFill shells out to "git credential fill" to resolve credentials

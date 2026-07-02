@@ -144,3 +144,23 @@ func WithGitInsecureSkipHostKeyVerify() Option {
 		g.settings.Git.InsecureSkipHostKeyVerify = true
 	}
 }
+
+// WithGitKnownHosts verifies SSH host keys against the given known_hosts data
+// in memory (nothing is read from disk). Unknown hosts are allowed, but a host
+// whose key has changed from the one recorded here is rejected. Hashed
+// known_hosts entries (|1|...) are not supported and are ignored. This takes
+// precedence over the system ~/.ssh/known_hosts default.
+func WithGitKnownHosts(knownHosts []byte) Option {
+	return func(g *Grabber) {
+		g.settings.Git.KnownHosts = knownHosts
+	}
+}
+
+// WithNoSystemFallback disables all ambient/system credential and execution
+// fallbacks, so grabber relies only on what is provided via functional options.
+// See settings.Settings.NoSystemFallback for the full list of what it disables.
+func WithNoSystemFallback() Option {
+	return func(g *Grabber) {
+		g.settings.NoSystemFallback = true
+	}
+}

@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
+
 	"github.com/liamg/grabber/settings"
 )
 
@@ -141,6 +143,78 @@ func TestTokenFromEnv(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestFetchArchive_EnvTokenGatedByFallback verifies the archive fallback only
+// applies an environment-variable bearer token when the system fallback is on.
+func TestFetchArchive_EnvTokenGatedByFallback(t *testing.T) {
+	archive := makeArchive(t, "repo", map[string]string{"file.txt": "hi"})
+
+	tests := []struct {
+		name             string
+		noSystemFallback bool
+		wantAuthHeader   string
+	}{
+		{"fallback on applies token", false, "Bearer envtok"},
+		{"fallback off omits token", true, ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("GH_TOKEN", "envtok")
+			t.Setenv("GITHUB_TOKEN", "")
+
+			var gotAuth string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotAuth = r.Header.Get("Authorization")
+				w.Header().Set("Content-Type", "application/gzip")
+				_, _ = w.Write(archive)
+			}))
+			defer srv.Close()
+
+			archiveURLOverride = srv.URL
+			defer func() { archiveURLOverride = "" }()
+
+			d := &Downloader{repoURL: "https://github.com/org/repo.git", ref: "1111111111111111111111111111111111111111"}
+			if err := d.fetchArchive(context.Background(), t.TempDir(), settings.Settings{NoSystemFallback: tt.noSystemFallback}); err != nil {
+				t.Fatalf("fetchArchive: %v", err)
+			}
+			if gotAuth != tt.wantAuthHeader {
+				t.Errorf("Authorization = %q, want %q", gotAuth, tt.wantAuthHeader)
+			}
+		})
+	}
+}
+
+// TestArchiveCredentials_HelperGatedByFallback verifies the system git
+// credential helper is only consulted for archive auth when fallback is on.
+func TestArchiveCredentials_HelperGatedByFallback(t *testing.T) {
+	sentinel := &githttp.BasicAuth{Username: "u", Password: "p"}
+	u, _ := url.Parse("https://example.com/org/repo")
+
+	t.Run("consulted when fallback on", func(t *testing.T) {
+		called := stubCredentialFill(t, sentinel)
+		d := &Downloader{repoURL: u.String()}
+		user, pass, ok := d.archiveCredentials(context.Background(), u, settings.Settings{})
+		if !ok || user != "u" || pass != "p" {
+			t.Fatalf("expected helper creds, got (%q,%q,%v)", user, pass, ok)
+		}
+		if !*called {
+			t.Error("expected the helper to be consulted")
+		}
+	})
+
+	t.Run("skipped when fallback off", func(t *testing.T) {
+		called := stubCredentialFill(t, sentinel)
+		d := &Downloader{repoURL: u.String()}
+		_, _, ok := d.archiveCredentials(context.Background(), u, settings.Settings{NoSystemFallback: true})
+		if ok {
+			t.Error("expected no credentials when fallback off")
+		}
+		if *called {
+			t.Error("helper must not be consulted when fallback off")
+		}
+	})
 }
 
 // makeArchive builds a gzip'd tar with a single top-level directory topDir and

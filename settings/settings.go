@@ -36,6 +36,15 @@ type Settings struct {
 	// Git-specific settings (SSH keys, clone depth, SSH-to-HTTPS conversion, etc.).
 	Git GitConfig
 
+	// NoSystemFallback disables all ambient/system credential and execution
+	// fallbacks, so grabber uses only what is provided via functional options.
+	// When true it disables: the SSH agent, the system `git credential` helper,
+	// the archive-fallback environment-variable token lookup (GH_TOKEN etc.),
+	// the ~/.ssh/known_hosts default host-key check, and the Mercurial (hg)
+	// subprocess (hg downloads error out). Intended for locked-down environments
+	// that must not read the ambient user/system configuration.
+	NoSystemFallback bool
+
 	// Working directory for intermediate files during download/extraction.
 	// Defaults to os.TempDir().
 	TemporaryDirectory string
@@ -76,6 +85,7 @@ type OCICredential struct {
 
 type GitConfig struct {
 	SSHKeys                   []SSHCredential // SSH private keys matched by host
+	KnownHosts                []byte          // known_hosts data for in-memory SSH host-key verification
 	Depth                     int             // 0 = full clone
 	SparseCheckout            bool            // only fetch the subdirectory specified via // syntax
 	InsecureSkipHostKeyVerify bool            // skip SSH host key verification

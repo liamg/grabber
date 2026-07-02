@@ -59,8 +59,11 @@ func (d *Downloader) fetchArchive(ctx context.Context, tmpDir string, s settings
 
 	if username, password, ok := d.archiveCredentials(ctx, u, s); ok {
 		req.SetBasicAuth(username, password)
-	} else if token := tokenFromEnv(u.Hostname()); token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
+	} else if !s.NoSystemFallback {
+		// Environment-variable tokens are a system fallback.
+		if token := tokenFromEnv(u.Hostname()); token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
 	}
 
 	resp, err := http.DefaultClient.Do(req)
@@ -100,8 +103,9 @@ func (d *Downloader) archiveCredentials(ctx context.Context, u *url.URL, s setti
 		return cred.Username, cred.Password, true
 	}
 
-	if u.Scheme == "https" || u.Scheme == "http" {
-		if auth := gitCredentialFill(ctx, u.Scheme, u.Hostname()); auth != nil {
+	// The system git credential helper is a system fallback.
+	if !s.NoSystemFallback && (u.Scheme == "https" || u.Scheme == "http") {
+		if auth := credentialFillFunc(ctx, u.Scheme, u.Hostname()); auth != nil {
 			return auth.Username, auth.Password, true
 		}
 	}
