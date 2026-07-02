@@ -202,9 +202,44 @@ func (d *Downloader) Download(ctx context.Context, tmpDir string, s settings.Set
 		d.repoURL = sshToHTTPS(d.repoURL)
 	}
 
+	err := d.gitDownload(ctx, tmpDir, s)
+	if err == nil {
+		return false, nil
+	}
+
+	// If git could not retrieve a commit hash, fall back to the hosting
+	// platform's HTTP archive endpoint. This handles orphaned commits that are
+	// unreachable via the git protocol but still downloadable via the API.
+	if looksLikeCommitHash(d.ref) {
+		// Clear any partial output from the failed git attempt before
+		// extracting the archive into the same directory.
+		if cleanErr := resetDir(tmpDir); cleanErr != nil {
+			return false, errors.Join(err, cleanErr)
+		}
+		if archiveErr := d.fetchArchive(ctx, tmpDir, s); archiveErr != nil {
+			return false, errors.Join(err, archiveErr)
+		}
+		return false, nil
+	}
+
+	return false, err
+}
+
+// resetDir removes dir and recreates it empty.
+func resetDir(dir string) error {
+	if err := os.RemoveAll(dir); err != nil {
+		return err
+	}
+	return os.MkdirAll(dir, 0o755)
+}
+
+// gitDownload clones the repo (and checks out d.ref if it is a commit hash)
+// into tmpDir, then strips the .git directory and, if d.subdir is set, promotes
+// that subdirectory's contents to the top level.
+func (d *Downloader) gitDownload(ctx context.Context, tmpDir string, s settings.Settings) error {
 	auth, err := d.resolveAuth(ctx, s)
 	if err != nil {
-		return false, fmt.Errorf("resolving git auth: %w", err)
+		return fmt.Errorf("resolving git auth: %w", err)
 	}
 
 	depth := d.resolveDepth(s)
@@ -261,7 +296,7 @@ func (d *Downloader) Download(ctx context.Context, tmpDir string, s settings.Set
 		}
 	}
 	if err != nil {
-		return false, fmt.Errorf("cloning repo: %w", err)
+		return fmt.Errorf("cloning repo: %w", err)
 	}
 
 	// If the ref is a commit hash or the fallback (no ref) was used with a non-branch/tag ref,
@@ -269,16 +304,16 @@ func (d *Downloader) Download(ctx context.Context, tmpDir string, s settings.Set
 	if d.ref != "" && looksLikeCommitHash(d.ref) {
 		hash, err := resolveCommitHash(repo, d.ref)
 		if err != nil {
-			return false, fmt.Errorf("resolving commit %s: %w", d.ref, err)
+			return fmt.Errorf("resolving commit %s: %w", d.ref, err)
 		}
 		wt, err := repo.Worktree()
 		if err != nil {
-			return false, err
+			return err
 		}
 		if err := wt.Checkout(&git.CheckoutOptions{
 			Hash: hash,
 		}); err != nil {
-			return false, fmt.Errorf("checking out commit %s: %w", d.ref, err)
+			return fmt.Errorf("checking out commit %s: %w", d.ref, err)
 		}
 	}
 
@@ -290,22 +325,22 @@ func (d *Downloader) Download(ctx context.Context, tmpDir string, s settings.Set
 		srcDir := filepath.Join(cloneDir, d.subdir)
 		info, err := os.Stat(srcDir)
 		if err != nil {
-			return false, fmt.Errorf("subdirectory %q not found in repo: %w", d.subdir, err)
+			return fmt.Errorf("subdirectory %q not found in repo: %w", d.subdir, err)
 		}
 		if !info.IsDir() {
-			return false, fmt.Errorf("subdirectory %q is not a directory", d.subdir)
+			return fmt.Errorf("subdirectory %q is not a directory", d.subdir)
 		}
 
 		// Move contents from subdir to tmpDir.
 		entries, err := os.ReadDir(srcDir)
 		if err != nil {
-			return false, err
+			return err
 		}
 		for _, e := range entries {
 			src := filepath.Join(srcDir, e.Name())
 			dst := filepath.Join(tmpDir, e.Name())
 			if err := os.Rename(src, dst); err != nil {
-				return false, fmt.Errorf("moving %s: %w", e.Name(), err)
+				return fmt.Errorf("moving %s: %w", e.Name(), err)
 			}
 		}
 
@@ -313,7 +348,7 @@ func (d *Downloader) Download(ctx context.Context, tmpDir string, s settings.Set
 		os.RemoveAll(cloneDir)
 	}
 
-	return false, nil
+	return nil
 }
 
 func (d *Downloader) resolveAuth(ctx context.Context, s settings.Settings) (transport.AuthMethod, error) {
