@@ -43,7 +43,44 @@ func (p *Protocol) Detect(rawURL string) (protocols.Downloadable, bool) {
 	return d, true
 }
 
-// parseS3URL parses an S3 URL and returns a Downloader.
+// parseS3URL parses an S3 URL and returns a Downloader. Credentials and region
+// may be supplied as query parameters (matching hashicorp/go-getter):
+// aws_access_key_id, aws_access_key_secret, aws_access_token and region. The
+// region parameter overrides any region derived from the host.
+func parseS3URL(rawURL string) (*Downloader, error) {
+	// Split off query parameters, which may carry credentials/region, before
+	// the location parsing below (which does not expect a query string).
+	var (
+		urlCreds  *credentials.StaticCredentialsProvider
+		urlRegion string
+	)
+	if base, query, ok := strings.Cut(rawURL, "?"); ok {
+		rawURL = base
+		if q, err := url.ParseQuery(query); err == nil {
+			urlRegion = q.Get("region")
+			id := q.Get("aws_access_key_id")
+			secret := q.Get("aws_access_key_secret")
+			token := q.Get("aws_access_token")
+			if id != "" || secret != "" || token != "" {
+				p := credentials.NewStaticCredentialsProvider(id, secret, token)
+				urlCreds = &p
+			}
+		}
+	}
+
+	d, err := parseS3Location(rawURL)
+	if err != nil {
+		return nil, err
+	}
+	d.urlCreds = urlCreds
+	if urlRegion != "" {
+		d.region = urlRegion
+	}
+	return d, nil
+}
+
+// parseS3Location parses the bucket/key/region from an S3 URL (without any query
+// string).
 //
 // Supported formats:
 //   - s3://bucket/key
@@ -51,7 +88,7 @@ func (p *Protocol) Detect(rawURL string) (protocols.Downloadable, bool) {
 //   - https://s3.us-west-2.amazonaws.com/bucket/key
 //   - https://bucket.s3.amazonaws.com/key
 //   - https://bucket.s3.us-west-2.amazonaws.com/key
-func parseS3URL(rawURL string) (*Downloader, error) {
+func parseS3Location(rawURL string) (*Downloader, error) {
 	// Handle s3://bucket/key format (AWS CLI style).
 	if strings.HasPrefix(rawURL, "s3://") {
 		path := strings.TrimPrefix(rawURL, "s3://")
@@ -137,6 +174,9 @@ type Downloader struct {
 	bucket string
 	key    string
 	region string
+	// urlCreds holds credentials supplied via URL query parameters, if any.
+	// They take precedence over settings.AWSCredentials for this download.
+	urlCreds *credentials.StaticCredentialsProvider
 }
 
 var _ protocols.Downloadable = (*Downloader)(nil)
@@ -170,7 +210,12 @@ func (d *Downloader) newClient(ctx context.Context, s settings.Settings) (*s3.Cl
 	var opts []func(*awsconfig.LoadOptions) error
 	opts = append(opts, awsconfig.WithRegion(region))
 
-	if s.AWSCredentials.AccessKeyID != "" {
+	// Credentials from the URL take precedence over configured settings, which
+	// in turn take precedence over the default AWS credential chain.
+	switch {
+	case d.urlCreds != nil:
+		opts = append(opts, awsconfig.WithCredentialsProvider(*d.urlCreds))
+	case s.AWSCredentials.AccessKeyID != "":
 		opts = append(opts, awsconfig.WithCredentialsProvider(
 			credentials.NewStaticCredentialsProvider(
 				s.AWSCredentials.AccessKeyID,

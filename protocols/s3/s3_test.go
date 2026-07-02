@@ -1,7 +1,10 @@
 package s3
 
 import (
+	"context"
 	"testing"
+
+	"github.com/liamg/grabber/settings"
 )
 
 func TestParseS3URL(t *testing.T) {
@@ -117,6 +120,82 @@ func TestParseS3URL(t *testing.T) {
 				t.Errorf("region = %q, want %q", d.region, tt.wantRegion)
 			}
 		})
+	}
+}
+
+func TestParseS3URL_Credentials(t *testing.T) {
+	t.Run("https form with creds and region", func(t *testing.T) {
+		d, err := parseS3URL("https://s3.amazonaws.com/my-bucket/key?aws_access_key_id=AKID&aws_access_key_secret=SECRET&aws_access_token=TOKEN&region=eu-west-1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if d.bucket != "my-bucket" || d.key != "key" {
+			t.Errorf("bucket/key = %q/%q, want my-bucket/key", d.bucket, d.key)
+		}
+		if d.region != "eu-west-1" {
+			t.Errorf("region = %q, want eu-west-1", d.region)
+		}
+		if d.urlCreds == nil {
+			t.Fatal("expected urlCreds to be set")
+		}
+		got, err := d.urlCreds.Retrieve(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.AccessKeyID != "AKID" || got.SecretAccessKey != "SECRET" || got.SessionToken != "TOKEN" {
+			t.Errorf("creds = %+v, want AKID/SECRET/TOKEN", got)
+		}
+	})
+
+	t.Run("s3 scheme form with creds", func(t *testing.T) {
+		d, err := parseS3URL("s3://my-bucket/path/file.txt?aws_access_key_id=AKID&aws_access_key_secret=SECRET")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if d.bucket != "my-bucket" || d.key != "path/file.txt" {
+			t.Errorf("bucket/key = %q/%q, want my-bucket/path/file.txt", d.bucket, d.key)
+		}
+		if d.urlCreds == nil {
+			t.Fatal("expected urlCreds to be set")
+		}
+	})
+
+	t.Run("region param overrides host-derived region", func(t *testing.T) {
+		d, err := parseS3URL("https://s3.us-west-2.amazonaws.com/my-bucket/key?region=eu-west-1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if d.region != "eu-west-1" {
+			t.Errorf("region = %q, want eu-west-1 (query overrides host)", d.region)
+		}
+	})
+
+	t.Run("no credential params leaves urlCreds nil", func(t *testing.T) {
+		d, err := parseS3URL("https://s3.amazonaws.com/my-bucket/key?region=us-east-2")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if d.urlCreds != nil {
+			t.Error("expected urlCreds to be nil when no credential params present")
+		}
+	})
+}
+
+func TestResolveRegion_Precedence(t *testing.T) {
+	// URL/host region (stored in d.region) is used when settings has none.
+	d := &Downloader{region: "eu-west-1"}
+	if got := d.resolveRegion(settings.Settings{}); got != "eu-west-1" {
+		t.Errorf("resolveRegion = %q, want eu-west-1", got)
+	}
+	// settings.AWSCredentials.Region takes precedence.
+	s := settings.Settings{AWSCredentials: settings.AWSCredentials{Region: "ap-south-1"}}
+	if got := d.resolveRegion(s); got != "ap-south-1" {
+		t.Errorf("resolveRegion = %q, want ap-south-1", got)
+	}
+	// Default when nothing is set.
+	empty := &Downloader{}
+	if got := empty.resolveRegion(settings.Settings{}); got != "us-east-1" {
+		t.Errorf("resolveRegion = %q, want us-east-1", got)
 	}
 }
 
