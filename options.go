@@ -2,20 +2,83 @@ package grabber
 
 import (
 	"net/http"
+	"net/url"
 
 	"github.com/liamg/grabber/protocols"
 	"github.com/liamg/grabber/settings"
 )
 
-// WithHTTPTransport sets the round tripper used by the HTTP and OCI protocols.
-// Use it to control the outbound transport, e.g. to install an SSRF guard or a
-// custom proxy. The OCI protocol layers its retry policy on top of the
-// transport, so retries are preserved. It does not affect protocols that use
-// their own clients (git, hg, s3, gcs). If nil, each protocol uses its default
-// transport.
-func WithHTTPTransport(rt http.RoundTripper) Option {
+// WithHTTPTransport sets the base transport used by the HTTP and OCI protocols
+// (and, for its TLS/proxy settings, the Git archive fallback). Use it to
+// control the outbound transport, e.g. to install an SSRF guard via a custom
+// DialContext. grabber clones it per download and layers any configured CA
+// pool, client certificate, and proxy onto the clone, so those options compose
+// with the transport. It does not affect protocols that use their own clients
+// (git clones map TLS/proxy onto go-git's per-clone options; s3/gcs use the SDK
+// clients). A concrete *http.Transport is required so grabber can clone and
+// extend it. If nil, a clone of http.DefaultTransport is used when any
+// TLS/proxy customisation is configured.
+func WithHTTPTransport(transport *http.Transport) Option {
 	return func(g *Grabber) {
-		g.settings.HTTPTransport = rt
+		g.settings.HTTPTransport = transport
+	}
+}
+
+// WithTLSCACert adds a CA certificate (PEM) trusted for HTTPS connections,
+// merged with the system roots. May be called multiple times to trust several
+// CAs. Applies to the HTTP, OCI, and Git (HTTPS) protocols.
+func WithTLSCACert(pem []byte) Option {
+	return func(g *Grabber) {
+		g.settings.TLSCACerts = append(g.settings.TLSCACerts, pem)
+	}
+}
+
+// WithClientCertificate sets a default TLS client certificate (mutual TLS) used
+// for any host without a more specific certificate.
+func WithClientCertificate(certPEM, keyPEM []byte) Option {
+	return func(g *Grabber) {
+		g.settings.ClientCertificates = append(g.settings.ClientCertificates, settings.ClientCertificate{
+			Cert: certPEM,
+			Key:  keyPEM,
+		})
+	}
+}
+
+// WithClientCertificateForHost sets a TLS client certificate (mutual TLS) scoped
+// to a specific host. It takes precedence over any default set via
+// WithClientCertificate.
+func WithClientCertificateForHost(host string, certPEM, keyPEM []byte) Option {
+	return func(g *Grabber) {
+		g.settings.ClientCertificates = append(g.settings.ClientCertificates, settings.ClientCertificate{
+			Host: host,
+			Cert: certPEM,
+			Key:  keyPEM,
+		})
+	}
+}
+
+// WithHTTPProxy sets a global HTTP proxy for outbound HTTP/OCI/Git(HTTPS)
+// requests. Pass empty user/pass for an unauthenticated proxy.
+func WithHTTPProxy(u *url.URL, username, password string) Option {
+	return func(g *Grabber) {
+		g.settings.Proxies = append(g.settings.Proxies, settings.ProxyConfig{
+			URL:      u,
+			Username: username,
+			Password: password,
+		})
+	}
+}
+
+// WithHTTPProxyForHost sets an HTTP proxy scoped to a specific host. It takes
+// precedence over any global proxy set via WithHTTPProxy when it matches.
+func WithHTTPProxyForHost(host string, u *url.URL, username, password string) Option {
+	return func(g *Grabber) {
+		g.settings.Proxies = append(g.settings.Proxies, settings.ProxyConfig{
+			Host:     host,
+			URL:      u,
+			Username: username,
+			Password: password,
+		})
 	}
 }
 

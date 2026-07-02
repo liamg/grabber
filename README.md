@@ -26,6 +26,7 @@ Grabber is an alternative to [go-getter](https://github.com/hashicorp/go-getter)
 - **Programmatic credential injection** — pass SSH keys, AWS credentials, GCP service account keys, OCI registry credentials, and HTTPS credentials via the Go API
 - **HTTPS credential matching** — configure HTTPS credentials with git-style host/path matching, used automatically for Git and HTTP protocols
 - **SSH-to-HTTPS auto-transform** — automatically convert SSH/SCP Git URLs to HTTPS (useful in CI environments without SSH key access)
+- **Custom TLS and proxying** — trust extra CAs, present mutual-TLS client certificates (per host), and route through HTTP proxies (global or per host) for the HTTP, OCI, and Git protocols — all via functional options, no environment variables
 - **Pure Go** — no system `git` or other CLI tools required (except `hg` for Mercurial; system `git` is used for credential helper support if available)
 - **Checksum verification** — verify downloaded file integrity via URL query param (`?checksum=sha256:abc...`) or the explicit `GrabWithSHA256Checksum()` API
 - **Automatic archive extraction** — downloaded archives are detected and extracted by extension
@@ -206,6 +207,12 @@ g := grabber.New(
 | `WithHTTPSCredential(host, user, pass)` | Add an HTTPS credential matched by host |
 | `WithHTTPSCredentialForPath(host, path, user, pass)` | Add an HTTPS credential matched by host and path prefix |
 | `WithGitSSHToHTTPS()` | Auto-convert SSH/SCP Git URLs to HTTPS before cloning |
+| `WithTLSCACert(pem)` | Trust an additional CA for HTTPS connections (HTTP, OCI, and Git protocols); repeatable |
+| `WithClientCertificate(certPEM, keyPEM)` | Default TLS client certificate for mutual TLS |
+| `WithClientCertificateForHost(host, certPEM, keyPEM)` | TLS client certificate scoped to a specific host (takes precedence over the default) |
+| `WithHTTPProxy(url, user, pass)` | Global HTTP proxy for HTTP, OCI, and Git (HTTPS) requests |
+| `WithHTTPProxyForHost(host, url, user, pass)` | HTTP proxy scoped to a specific host (preferred over the global proxy when it matches) |
+| `WithHTTPTransport(*http.Transport)` | Base transport for the HTTP/OCI protocols (e.g. with an SSRF-guarded dialer); cloned per download with the TLS/proxy options layered on top |
 | `WithProtocols(...Protocol)` | Override the default set of protocols |
 
 When AWS/GCP credentials are not provided, the respective SDK default credential chains are used (env vars, shared config, IAM roles, etc.).

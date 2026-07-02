@@ -98,20 +98,30 @@ func (d *Downloader) Download(ctx context.Context, tmpDir string, s settings.Set
 		return false, fmt.Errorf("creating OCI repository: %w", err)
 	}
 
-	// Route the registry client through the caller-supplied transport (e.g. an
-	// SSRF-guarded transport) and/or the credential matched for this registry.
-	// When neither is set we leave repo.Client nil so oras uses its own default
-	// client.
+	// Route the registry client through the configured transport for this host
+	// (CA pool, client cert, proxy and/or a caller-supplied SSRF-guarded base
+	// transport) and/or the credential matched for this registry. When neither
+	// is set we leave repo.Client nil so oras uses its own default client.
 	//
-	// The retry policy is layered on top of the caller's transport via
-	// retry.NewTransport, so oras's default retry-on-429/5xx behaviour is
-	// preserved and each retried attempt is re-dialed through the guard. A nil
-	// transport falls back to http.DefaultTransport inside retry.
+	// The retry policy is layered on top of the transport via retry.NewTransport,
+	// so oras's default retry-on-429/5xx behaviour is preserved and each retried
+	// attempt is re-dialed through the guard. A nil transport falls back to
+	// http.DefaultTransport inside retry.
+	tr, err := s.TransportForHost(d.registry)
+	if err != nil {
+		return false, fmt.Errorf("configuring OCI transport: %w", err)
+	}
 	cred := s.MatchOCICredential(d.registry)
 	hasCreds := cred != nil && (cred.Username != "" || cred.Password != "")
-	if s.HTTPTransport != nil || hasCreds {
+	if tr != nil || hasCreds {
+		// Pass an interface-typed nil (not a typed-nil *http.Transport) when
+		// there is no custom transport, so retry falls back to its default.
+		var base http.RoundTripper
+		if tr != nil {
+			base = tr
+		}
 		authClient := &auth.Client{
-			Client: &http.Client{Transport: retry.NewTransport(s.HTTPTransport)},
+			Client: &http.Client{Transport: retry.NewTransport(base)},
 			Cache:  auth.NewCache(),
 		}
 		if hasCreds {

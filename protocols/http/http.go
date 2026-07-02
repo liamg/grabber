@@ -87,8 +87,16 @@ func (d *Downloader) Download(ctx context.Context, tmpDir string, s settings.Set
 	}
 
 	client := http.DefaultClient
-	if s.HTTPTransport != nil {
-		client = &http.Client{Transport: s.HTTPTransport}
+	host := ""
+	if u, perr := url.Parse(d.url); perr == nil {
+		host = u.Hostname()
+	}
+	tr, err := s.TransportForHost(host)
+	if err != nil {
+		return false, fmt.Errorf("configuring HTTP transport: %w", err)
+	}
+	if tr != nil {
+		client = &http.Client{Transport: tr}
 	}
 
 	resp, err := client.Do(req)

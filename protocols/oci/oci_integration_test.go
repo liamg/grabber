@@ -173,6 +173,39 @@ func TestOCIIntegration_SingleFileArtifact(t *testing.T) {
 	assertFileContent(t, filepath.Join(dst, "hello.txt"), "hello from oci")
 }
 
+// TestOCIIntegration_WithCredentials exercises the auth-client construction
+// path (credentials configured, no custom transport). The local registry
+// ignores the Authorization header, but the pull must still succeed through
+// the credentialed client.
+func TestOCIIntegration_WithCredentials(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	registryHost, cleanup := startRegistry(t)
+	defer cleanup()
+
+	pushTestArtifact(t, registryHost, "test/authed", "v1.0.0", "hello.txt", []byte("authed content"))
+
+	d := &Downloader{
+		ref:      fmt.Sprintf("%s/test/authed:v1.0.0", registryHost),
+		registry: registryHost,
+	}
+
+	s := settings.Defaults
+	s.OCIPlainHTTP = true
+	s.OCICredentials = []settings.OCICredential{
+		{Registry: registryHost, Username: "user", Password: "pass"},
+	}
+
+	dst := t.TempDir()
+	if _, err := d.Download(context.Background(), dst, s); err != nil {
+		t.Fatalf("download with credentials: %v", err)
+	}
+
+	assertFileContent(t, filepath.Join(dst, "hello.txt"), "authed content")
+}
+
 func TestOCIIntegration_MultiLayerArtifact(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")

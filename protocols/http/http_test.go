@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -97,52 +98,50 @@ func TestDownload(t *testing.T) {
 }
 
 // recordingTransport delegates to a base transport but records that it was
-// used, so we can assert the injected transport is actually exercised.
-type recordingTransport struct {
-	base   http.RoundTripper
-	called bool
-}
-
-func (rt *recordingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	rt.called = true
-	return rt.base.RoundTrip(req)
-}
-
+// used, so we can assert the injected transport is actually exercised. The
+// caller-supplied transport customises DialContext (the same seam an SSRF
+// guard uses), and grabber must dial through it.
 func TestDownload_UsesHTTPTransport(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("hello"))
 	}))
 	defer srv.Close()
 
-	rt := &recordingTransport{base: http.DefaultTransport}
+	var dialed bool
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	dialer := &net.Dialer{}
+	tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		dialed = true
+		return dialer.DialContext(ctx, network, addr)
+	}
+
 	s := settings.Defaults
-	s.HTTPTransport = rt
+	s.HTTPTransport = tr
 
 	d := &Downloader{url: srv.URL + "/file.txt"}
 	if _, err := d.Download(context.Background(), t.TempDir(), s); err != nil {
 		t.Fatalf("Download() error: %v", err)
 	}
-	if !rt.called {
+	if !dialed {
 		t.Error("configured HTTPTransport was not used")
 	}
 }
 
-// blockingTransport rejects every request, standing in for an SSRF guard that
-// refuses to dial an internal address.
-type blockingTransport struct{}
-
-func (blockingTransport) RoundTrip(*http.Request) (*http.Response, error) {
-	return nil, errors.New("blocked by transport")
-}
-
+// TestDownload_HTTPTransportCanBlock stands in for an SSRF guard that refuses
+// to dial an internal address via the transport's DialContext.
 func TestDownload_HTTPTransportCanBlock(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("should not be reached"))
 	}))
 	defer srv.Close()
 
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.DialContext = func(context.Context, string, string) (net.Conn, error) {
+		return nil, errors.New("blocked by transport")
+	}
+
 	s := settings.Defaults
-	s.HTTPTransport = blockingTransport{}
+	s.HTTPTransport = tr
 
 	d := &Downloader{url: srv.URL + "/file.txt"}
 	if _, err := d.Download(context.Background(), t.TempDir(), s); err == nil {

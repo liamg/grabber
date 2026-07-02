@@ -66,7 +66,20 @@ func (d *Downloader) fetchArchive(ctx context.Context, tmpDir string, s settings
 		}
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	client := http.DefaultClient
+	archiveHost := ""
+	if au, perr := url.Parse(aURL); perr == nil {
+		archiveHost = au.Hostname()
+	}
+	tr, err := s.TransportForHost(archiveHost)
+	if err != nil {
+		return fmt.Errorf("configuring archive transport: %w", err)
+	}
+	if tr != nil {
+		client = &http.Client{Transport: tr}
+	}
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("downloading archive from %s: %w", aURL, err)
 	}

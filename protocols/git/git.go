@@ -252,6 +252,10 @@ func (d *Downloader) gitDownload(ctx context.Context, tmpDir string, s settings.
 		Auth: auth,
 	}
 
+	// Apply CA / client-cert / proxy for HTTPS clones via go-git's per-clone
+	// options (parallel-safe; no global transport state).
+	applyTLSAndProxy(cloneOpts, d.repoURL, s)
+
 	if depth > 0 {
 		cloneOpts.Depth = depth
 	}
@@ -352,6 +356,32 @@ func (d *Downloader) gitDownload(ctx context.Context, tmpDir string, s settings.
 	}
 
 	return nil
+}
+
+// applyTLSAndProxy sets go-git's per-clone CA bundle, client certificate, and
+// proxy options for HTTPS clones, resolved from settings by host. It is a no-op
+// for non-HTTPS URLs (SSH clones do not use these).
+func applyTLSAndProxy(opts *git.CloneOptions, repoURL string, s settings.Settings) {
+	u, err := url.Parse(repoURL)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") {
+		return
+	}
+	host := u.Hostname()
+
+	if len(s.TLSCACerts) > 0 {
+		opts.CABundle = bytes.Join(s.TLSCACerts, []byte("\n"))
+	}
+	if cert := s.MatchClientCertificate(host); cert != nil {
+		opts.ClientCert = cert.Cert
+		opts.ClientKey = cert.Key
+	}
+	if proxy := s.MatchProxy(host); proxy != nil && proxy.URL != nil {
+		opts.ProxyOptions = transport.ProxyOptions{
+			URL:      proxy.URL.String(),
+			Username: proxy.Username,
+			Password: proxy.Password,
+		}
+	}
 }
 
 // credentialFillFunc is the system git credential helper, indirected through a
