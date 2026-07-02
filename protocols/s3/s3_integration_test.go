@@ -24,7 +24,7 @@ func startLocalStack(t *testing.T) (endpoint string, cleanup func()) {
 	ctx := context.Background()
 
 	req := testcontainers.ContainerRequest{
-		Image:        "localstack/localstack:latest",
+		Image:        "localstack/localstack:3.8.1",
 		ExposedPorts: []string{"4566/tcp"},
 		Env: map[string]string{
 			"SERVICES": "s3",
