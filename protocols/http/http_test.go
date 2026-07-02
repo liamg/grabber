@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -92,6 +93,60 @@ func TestDownload(t *testing.T) {
 	}
 	if string(data) != content {
 		t.Errorf("downloaded content = %q, want %q", string(data), content)
+	}
+}
+
+// recordingTransport delegates to a base transport but records that it was
+// used, so we can assert the injected transport is actually exercised.
+type recordingTransport struct {
+	base   http.RoundTripper
+	called bool
+}
+
+func (rt *recordingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	rt.called = true
+	return rt.base.RoundTrip(req)
+}
+
+func TestDownload_UsesHTTPTransport(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("hello"))
+	}))
+	defer srv.Close()
+
+	rt := &recordingTransport{base: http.DefaultTransport}
+	s := settings.Defaults
+	s.HTTPTransport = rt
+
+	d := &Downloader{url: srv.URL + "/file.txt"}
+	if _, err := d.Download(context.Background(), t.TempDir(), s); err != nil {
+		t.Fatalf("Download() error: %v", err)
+	}
+	if !rt.called {
+		t.Error("configured HTTPTransport was not used")
+	}
+}
+
+// blockingTransport rejects every request, standing in for an SSRF guard that
+// refuses to dial an internal address.
+type blockingTransport struct{}
+
+func (blockingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("blocked by transport")
+}
+
+func TestDownload_HTTPTransportCanBlock(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("should not be reached"))
+	}))
+	defer srv.Close()
+
+	s := settings.Defaults
+	s.HTTPTransport = blockingTransport{}
+
+	d := &Downloader{url: srv.URL + "/file.txt"}
+	if _, err := d.Download(context.Background(), t.TempDir(), s); err == nil {
+		t.Error("expected error when transport blocks the request, got nil")
 	}
 }
 
