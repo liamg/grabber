@@ -99,14 +99,16 @@ func (d *Downloader) Download(ctx context.Context, tmpDir string, s settings.Set
 	}
 
 	// Route the registry client through the caller-supplied transport (e.g. an
-	// SSRF-guarded transport) and/or configured credentials. When neither is set
-	// we leave repo.Client nil so oras uses its own default client.
+	// SSRF-guarded transport) and/or the credential matched for this registry.
+	// When neither is set we leave repo.Client nil so oras uses its own default
+	// client.
 	//
 	// The retry policy is layered on top of the caller's transport via
 	// retry.NewTransport, so oras's default retry-on-429/5xx behaviour is
 	// preserved and each retried attempt is re-dialed through the guard. A nil
 	// transport falls back to http.DefaultTransport inside retry.
-	hasCreds := s.OCICredentials.Username != "" || s.OCICredentials.Password != ""
+	cred := s.MatchOCICredential(d.registry)
+	hasCreds := cred != nil && (cred.Username != "" || cred.Password != "")
 	if s.HTTPTransport != nil || hasCreds {
 		authClient := &auth.Client{
 			Client: &http.Client{Transport: retry.NewTransport(s.HTTPTransport)},
@@ -114,14 +116,14 @@ func (d *Downloader) Download(ctx context.Context, tmpDir string, s settings.Set
 		}
 		if hasCreds {
 			authClient.Credential = auth.StaticCredential(d.registry, auth.Credential{
-				Username: s.OCICredentials.Username,
-				Password: s.OCICredentials.Password,
+				Username: cred.Username,
+				Password: cred.Password,
 			})
 		}
 		repo.Client = authClient
 	}
 
-	if s.OCICredentials.PlainHTTP {
+	if s.OCIPlainHTTP {
 		repo.PlainHTTP = true
 	}
 

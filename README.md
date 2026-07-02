@@ -192,12 +192,14 @@ g := grabber.New(
 |--------|-------------|
 | `WithSparseCheckout(bool)` | Enable sparse checkout for Git subdirectories (default: `false`) |
 | `WithAutoExtract(bool)` | Enable automatic archive extraction (default: `true`) |
-| `WithGitSSHKey([]byte)` | SSH private key for Git authentication |
+| `WithGitSSHKey([]byte)` | Default SSH private key for Git authentication |
+| `WithGitSSHKeyForHost(host, []byte)` | SSH private key scoped to a specific host (takes precedence over the default) |
 | `WithGitDepth(int)` | Override shallow clone depth for Git (default: 1; 0 = full clone) |
 | `WithGitInsecureSkipHostKeyVerify()` | Skip SSH host key verification |
 | `WithAWSCredentials(keyID, secret, token, region)` | Static AWS credentials for S3 |
 | `WithGCPCredentials(serviceAccountKey)` | GCP service account key for GCS |
-| `WithOCICredentials(username, password)` | Registry credentials for OCI |
+| `WithOCICredentials(username, password)` | Default registry credentials for OCI |
+| `WithOCICredentialForRegistry(registry, username, password)` | OCI credentials scoped to a specific registry (takes precedence over the default) |
 | `WithOCIPlainHTTP()` | Use HTTP instead of HTTPS for OCI registries |
 | `WithHTTPSCredential(host, user, pass)` | Add an HTTPS credential matched by host |
 | `WithHTTPSCredentialForPath(host, path, user, pass)` | Add an HTTPS credential matched by host and path prefix |

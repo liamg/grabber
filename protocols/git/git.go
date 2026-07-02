@@ -354,8 +354,8 @@ func (d *Downloader) gitDownload(ctx context.Context, tmpDir string, s settings.
 func (d *Downloader) resolveAuth(ctx context.Context, s settings.Settings) (transport.AuthMethod, error) {
 	// Check for SSH URL.
 	if strings.HasPrefix(d.repoURL, "ssh://") || scpPattern.MatchString(d.repoURL) {
-		if len(s.Git.SSHKey) > 0 {
-			keys, err := ssh.NewPublicKeys("git", s.Git.SSHKey, "")
+		if key := s.MatchSSHKey(sshHost(d.repoURL)); len(key) > 0 {
+			keys, err := ssh.NewPublicKeys("git", key, "")
 			if err != nil {
 				return nil, fmt.Errorf("parsing SSH key: %w", err)
 			}
@@ -442,6 +442,26 @@ func gitCredentialFill(ctx context.Context, protocol, host string) *http.BasicAu
 		Username: username,
 		Password: password,
 	}
+}
+
+// sshHost extracts the hostname from an SSH or SCP-style Git URL.
+// e.g. "git@github.com:user/repo.git" -> "github.com"
+// e.g. "ssh://git@github.com:22/user/repo.git" -> "github.com"
+// Returns "" if the host cannot be determined.
+func sshHost(rawURL string) string {
+	// SCP-style: git@github.com:user/repo.git
+	if scpPattern.MatchString(rawURL) {
+		atIdx := strings.Index(rawURL, "@")
+		colonIdx := strings.Index(rawURL[atIdx:], ":") + atIdx
+		return rawURL[atIdx+1 : colonIdx]
+	}
+
+	// ssh:// scheme
+	if u, err := url.Parse(rawURL); err == nil {
+		return u.Hostname()
+	}
+
+	return ""
 }
 
 // sshToHTTPS converts SSH and SCP-style Git URLs to HTTPS.

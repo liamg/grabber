@@ -162,7 +162,7 @@ func TestOCIIntegration_SingleFileArtifact(t *testing.T) {
 	}
 
 	s := settings.Defaults
-	s.OCICredentials.PlainHTTP = true
+	s.OCIPlainHTTP = true
 
 	dst := t.TempDir()
 	_, err := d.Download(context.Background(), dst, s)
@@ -193,7 +193,7 @@ func TestOCIIntegration_MultiLayerArtifact(t *testing.T) {
 	}
 
 	s := settings.Defaults
-	s.OCICredentials.PlainHTTP = true
+	s.OCIPlainHTTP = true
 
 	dst := t.TempDir()
 	_, err := d.Download(context.Background(), dst, s)
@@ -221,7 +221,7 @@ func TestOCIIntegration_LatestTag(t *testing.T) {
 	}
 
 	s := settings.Defaults
-	s.OCICredentials.PlainHTTP = true
+	s.OCIPlainHTTP = true
 
 	dst := t.TempDir()
 	_, err := d.Download(context.Background(), dst, s)
@@ -246,7 +246,7 @@ func TestOCIIntegration_NonexistentTag(t *testing.T) {
 	}
 
 	s := settings.Defaults
-	s.OCICredentials.PlainHTTP = true
+	s.OCIPlainHTTP = true
 
 	_, err := d.Download(context.Background(), t.TempDir(), s)
 	if err == nil {
