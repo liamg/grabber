@@ -1,9 +1,23 @@
 package grabber
 
 import (
+	"net/http"
+
 	"github.com/liamg/grabber/protocols"
 	"github.com/liamg/grabber/settings"
 )
+
+// WithHTTPTransport sets the round tripper used by the HTTP and OCI protocols.
+// Use it to control the outbound transport, e.g. to install an SSRF guard or a
+// custom proxy. The OCI protocol layers its retry policy on top of the
+// transport, so retries are preserved. It does not affect protocols that use
+// their own clients (git, hg, s3, gcs). If nil, each protocol uses its default
+// transport.
+func WithHTTPTransport(rt http.RoundTripper) Option {
+	return func(g *Grabber) {
+		g.settings.HTTPTransport = rt
+	}
+}
 
 func WithSparseCheckout(enabled bool) Option {
 	return func(g *Grabber) {

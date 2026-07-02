@@ -1,6 +1,7 @@
 package settings
 
 import (
+	"net/http"
 	"net/url"
 	"os"
 	"strings"
@@ -34,6 +35,18 @@ type Settings struct {
 	// Working directory for intermediate files during download/extraction.
 	// Defaults to os.TempDir().
 	TemporaryDirectory string
+
+	// HTTPTransport is the round tripper used by the HTTP and OCI protocols. It
+	// lets callers control the outbound transport — for example to install an
+	// SSRF guard or a custom proxy. Because net/http re-dials through the
+	// transport on every request and redirect, a guard installed here also
+	// covers DNS-rebinding and redirect-to-internal attacks. The OCI protocol
+	// layers its retry policy on top of this transport, so retries are preserved.
+	//
+	// It does not affect protocols that use their own clients (git, hg, s3, gcs).
+	// If nil, each protocol falls back to its default transport
+	// (http.DefaultTransport).
+	HTTPTransport http.RoundTripper
 }
 
 type AWSCredentials struct {
