@@ -8,6 +8,7 @@ import (
 	"os/signal"
 
 	"github.com/liamg/grabber"
+	"github.com/liamg/grabber/internal/version"
 )
 
 func main() {
@@ -18,6 +19,7 @@ func main() {
 }
 
 func run() error {
+	showVersion := flag.Bool("version", false, "print version information and exit")
 	checksum := flag.String("checksum", "", "SHA-256 checksum to verify (hex-encoded)")
 	flag.StringVar(checksum, "c", "", "SHA-256 checksum to verify (hex-encoded)")
 	noExtract := flag.Bool("no-extract", false, "disable automatic archive extraction")
@@ -36,6 +38,11 @@ func run() error {
 	}
 
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(version.String())
+		return nil
+	}
 
 	args := flag.Args()
 	if len(args) < 1 {

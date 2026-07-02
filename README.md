@@ -329,9 +329,16 @@ grabber -c e3b0c44298fc1c14... https://example.com/file.tar.gz ./output
 
 # Copy a local file
 grabber ./path/to/source ./destination
+
+# Print version information
+grabber --version
 ```
 
 Run `grabber --help` for all available flags.
+
+Release binaries are built with version metadata embedded via `-ldflags`, so
+`grabber --version` on a released binary reports the tag, commit, and build
+date. `go install` builds report `dev`.
 
 ## Installation
 

@@ -1,0 +1,16 @@
+# Configures GitHub's auto-generated release notes (used by
+# `gh release create --generate-notes`). PRs are grouped into the sections
+# below by label; the "*" catch-all captures anything else.
+changelog:
+  exclude:
+    labels:
+      - ignore-for-release
+  categories:
+    - title: Features
+      labels: ['feature', 'enhancement', 'feat']
+    - title: Bug Fixes
+      labels: ['bug', 'fix']
+    - title: Dependencies
+      labels: ['dependencies']
+    - title: Other Changes
+      labels: ['*']
