@@ -73,6 +73,9 @@ Use `//` to specify a subdirectory: `github.com/user/repo//modules/vpc?ref=v1.0.
 
 When sparse checkout is enabled, only the specified subdirectory is checked out. Otherwise the full repo is cloned and the subdirectory is extracted.
 
+**Orphaned commit fallback:**
+When `ref` is a commit SHA that the git protocol can't reach (e.g. an orphaned commit that is no longer reachable from any branch or tag), grabber falls back to downloading a tarball of that commit from the hosting platform's HTTP API. GitHub, GitLab, and Bitbucket are supported. Credentials are resolved from the same sources as clones (URL userinfo, configured HTTPS credentials, the git credential helper) and, failing those, from well-known API token environment variables: `GH_TOKEN`/`GITHUB_TOKEN`, `GITLAB_TOKEN`/`GL_TOKEN`, and `BITBUCKET_TOKEN`. The result is a plain source snapshot with no `.git` directory. SSH keys cannot be used for this HTTP fallback, so SSH-only setups need HTTP credentials configured for private repositories.
+
 ### Mercurial
 
 > **Note:** Mercurial support requires the `hg` CLI to be installed on the system.

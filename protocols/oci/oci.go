@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -97,15 +98,27 @@ func (d *Downloader) Download(ctx context.Context, tmpDir string, s settings.Set
 		return false, fmt.Errorf("creating OCI repository: %w", err)
 	}
 
-	// Set up auth if credentials are provided.
-	if s.OCICredentials.Username != "" || s.OCICredentials.Password != "" {
-		repo.Client = &auth.Client{
-			Client: retry.DefaultClient,
-			Credential: auth.StaticCredential(d.registry, auth.Credential{
+	// Route the registry client through the caller-supplied transport (e.g. an
+	// SSRF-guarded transport) and/or configured credentials. When neither is set
+	// we leave repo.Client nil so oras uses its own default client.
+	//
+	// The retry policy is layered on top of the caller's transport via
+	// retry.NewTransport, so oras's default retry-on-429/5xx behaviour is
+	// preserved and each retried attempt is re-dialed through the guard. A nil
+	// transport falls back to http.DefaultTransport inside retry.
+	hasCreds := s.OCICredentials.Username != "" || s.OCICredentials.Password != ""
+	if s.HTTPTransport != nil || hasCreds {
+		authClient := &auth.Client{
+			Client: &http.Client{Transport: retry.NewTransport(s.HTTPTransport)},
+			Cache:  auth.NewCache(),
+		}
+		if hasCreds {
+			authClient.Credential = auth.StaticCredential(d.registry, auth.Credential{
 				Username: s.OCICredentials.Username,
 				Password: s.OCICredentials.Password,
-			}),
+			})
 		}
+		repo.Client = authClient
 	}
 
 	if s.OCICredentials.PlainHTTP {

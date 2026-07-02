@@ -86,7 +86,12 @@ func (d *Downloader) Download(ctx context.Context, tmpDir string, s settings.Set
 		req.SetBasicAuth(cred.Username, cred.Password)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	client := http.DefaultClient
+	if s.HTTPTransport != nil {
+		client = &http.Client{Transport: s.HTTPTransport}
+	}
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return false, fmt.Errorf("downloading %s: %w", d.url, err)
 	}
