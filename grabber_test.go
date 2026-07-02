@@ -2,6 +2,7 @@ package grabber
 
 import (
 	"archive/zip"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -221,8 +222,44 @@ func TestNew_WithOptions(t *testing.T) {
 	if g.settings.AWSCredentials.Region != "us-west-2" {
 		t.Errorf("expected AWS Region=us-west-2, got %s", g.settings.AWSCredentials.Region)
 	}
-	if g.settings.OCICredentials.Username != "user" {
-		t.Errorf("expected OCI Username=user, got %s", g.settings.OCICredentials.Username)
+	if len(g.settings.OCICredentials) != 1 || g.settings.OCICredentials[0].Username != "user" {
+		t.Errorf("expected a default OCI credential with Username=user, got %+v", g.settings.OCICredentials)
+	}
+}
+
+func TestWithOCICredentialForRegistry(t *testing.T) {
+	g := New(
+		WithOCICredentials("default-user", "default-pass"),
+		WithOCICredentialForRegistry("ghcr.io", "gh-user", "gh-pass"),
+	)
+
+	if cred := g.settings.MatchOCICredential("ghcr.io"); cred == nil || cred.Username != "gh-user" {
+		t.Errorf("expected ghcr.io to match gh-user, got %+v", cred)
+	}
+	// A registry with no specific match falls back to the default credential.
+	if cred := g.settings.MatchOCICredential("registry.example.com"); cred == nil || cred.Username != "default-user" {
+		t.Errorf("expected fallback to default-user, got %+v", cred)
+	}
+}
+
+func TestWithGitSSHKeyForHost(t *testing.T) {
+	defaultKey := []byte("default-key")
+	ghKey := []byte("github-key")
+	g := New(
+		WithGitSSHKey(defaultKey),
+		WithGitSSHKeyForHost("github.com", ghKey),
+	)
+
+	if got := g.settings.MatchSSHKey("github.com"); !bytes.Equal(got, ghKey) {
+		t.Errorf("expected github.com to match github-key, got %q", got)
+	}
+	// Case-insensitive host matching.
+	if got := g.settings.MatchSSHKey("GitHub.com"); !bytes.Equal(got, ghKey) {
+		t.Errorf("expected case-insensitive match to github-key, got %q", got)
+	}
+	// An unmatched host falls back to the default key.
+	if got := g.settings.MatchSSHKey("gitlab.com"); !bytes.Equal(got, defaultKey) {
+		t.Errorf("expected fallback to default-key, got %q", got)
 	}
 }
 

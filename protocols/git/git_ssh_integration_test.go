@@ -164,7 +164,7 @@ rm -rf /tmp/working
 	d := &Downloader{repoURL: sshURL}
 	s := settings.Settings{
 		Git: settings.GitConfig{
-			SSHKey:                    privateKey,
+			SSHKeys:                   []settings.SSHCredential{{Key: privateKey}},
 			InsecureSkipHostKeyVerify: true,
 		},
 	}
@@ -279,7 +279,7 @@ rm -rf /tmp/working
 	d := &Downloader{repoURL: sshURL, subdir: "modules/vpc"}
 	s := settings.Settings{
 		Git: settings.GitConfig{
-			SSHKey:                    privateKey,
+			SSHKeys:                   []settings.SSHCredential{{Key: privateKey}},
 			InsecureSkipHostKeyVerify: true,
 		},
 	}

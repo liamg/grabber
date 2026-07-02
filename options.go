@@ -56,18 +56,32 @@ func WithGCPCredentials(serviceAccountKey string) Option {
 	}
 }
 
+// WithOCICredentials sets default credentials used for any OCI registry that
+// has no more specific match configured via WithOCICredentialForRegistry.
 func WithOCICredentials(username, password string) Option {
 	return func(g *Grabber) {
-		g.settings.OCICredentials = settings.OCICredentials{
+		g.settings.OCICredentials = append(g.settings.OCICredentials, settings.OCICredential{
 			Username: username,
 			Password: password,
-		}
+		})
+	}
+}
+
+// WithOCICredentialForRegistry sets credentials scoped to a specific registry
+// host (e.g. "ghcr.io"). These take precedence over any default credentials.
+func WithOCICredentialForRegistry(registry, username, password string) Option {
+	return func(g *Grabber) {
+		g.settings.OCICredentials = append(g.settings.OCICredentials, settings.OCICredential{
+			Registry: registry,
+			Username: username,
+			Password: password,
+		})
 	}
 }
 
 func WithOCIPlainHTTP() Option {
 	return func(g *Grabber) {
-		g.settings.OCICredentials.PlainHTTP = true
+		g.settings.OCIPlainHTTP = true
 	}
 }
 
@@ -98,9 +112,24 @@ func WithGitSSHToHTTPS() Option {
 	}
 }
 
+// WithGitSSHKey sets a default SSH private key used for any host that has no
+// more specific key configured via WithGitSSHKeyForHost.
 func WithGitSSHKey(key []byte) Option {
 	return func(g *Grabber) {
-		g.settings.Git.SSHKey = key
+		g.settings.Git.SSHKeys = append(g.settings.Git.SSHKeys, settings.SSHCredential{
+			Key: key,
+		})
+	}
+}
+
+// WithGitSSHKeyForHost sets an SSH private key scoped to a specific host (e.g.
+// "github.com"). It takes precedence over any default key set via WithGitSSHKey.
+func WithGitSSHKeyForHost(host string, key []byte) Option {
+	return func(g *Grabber) {
+		g.settings.Git.SSHKeys = append(g.settings.Git.SSHKeys, settings.SSHCredential{
+			Host: host,
+			Key:  key,
+		})
 	}
 }
 
