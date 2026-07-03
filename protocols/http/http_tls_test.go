@@ -13,6 +13,7 @@ import (
 
 	"github.com/liamg/grabber/internal/testcert"
 	"github.com/liamg/grabber/settings"
+	"github.com/liamg/grabber/ssrf"
 )
 
 // newCAServer starts an HTTPS server whose certificate is signed by a fresh
@@ -69,13 +70,13 @@ func TestDownload_CustomCA(t *testing.T) {
 
 	t.Run("fails without the CA", func(t *testing.T) {
 		d := &Downloader{url: srv.URL + "/file.txt"}
-		if _, err := d.Download(context.Background(), t.TempDir(), settings.Settings{}); err == nil {
+		if _, err := d.Download(context.Background(), t.TempDir(), settings.Settings{SSRFLevel: ssrf.None}); err == nil {
 			t.Fatal("expected TLS verification failure without the custom CA")
 		}
 	})
 
 	t.Run("succeeds with the CA", func(t *testing.T) {
-		s := settings.Settings{TLSCACerts: [][]byte{ca.CertPEM()}}
+		s := settings.Settings{SSRFLevel: ssrf.None, TLSCACerts: [][]byte{ca.CertPEM()}}
 		dst := t.TempDir()
 		d := &Downloader{url: srv.URL + "/file.txt"}
 		if _, err := d.Download(context.Background(), dst, s); err != nil {
@@ -98,7 +99,7 @@ func TestDownload_MutualTLS(t *testing.T) {
 	}
 
 	t.Run("fails without a client certificate", func(t *testing.T) {
-		s := settings.Settings{TLSCACerts: [][]byte{ca.CertPEM()}}
+		s := settings.Settings{SSRFLevel: ssrf.None, TLSCACerts: [][]byte{ca.CertPEM()}}
 		d := &Downloader{url: srv.URL + "/file.txt"}
 		if _, err := d.Download(context.Background(), t.TempDir(), s); err == nil {
 			t.Fatal("expected failure without a client certificate")
@@ -106,7 +107,7 @@ func TestDownload_MutualTLS(t *testing.T) {
 	})
 
 	t.Run("succeeds with the default client certificate", func(t *testing.T) {
-		s := settings.Settings{
+		s := settings.Settings{SSRFLevel: ssrf.None,
 			TLSCACerts:         [][]byte{ca.CertPEM()},
 			ClientCertificates: []settings.ClientCertificate{{Cert: clientCert, Key: clientKey}},
 		}
@@ -119,7 +120,7 @@ func TestDownload_MutualTLS(t *testing.T) {
 	})
 
 	t.Run("succeeds with a host-scoped client certificate", func(t *testing.T) {
-		s := settings.Settings{
+		s := settings.Settings{SSRFLevel: ssrf.None,
 			TLSCACerts: [][]byte{ca.CertPEM()},
 			ClientCertificates: []settings.ClientCertificate{
 				{Host: "127.0.0.1", Cert: clientCert, Key: clientKey},
@@ -134,7 +135,7 @@ func TestDownload_MutualTLS(t *testing.T) {
 	})
 
 	t.Run("host-scoped certificate for another host is not used", func(t *testing.T) {
-		s := settings.Settings{
+		s := settings.Settings{SSRFLevel: ssrf.None,
 			TLSCACerts: [][]byte{ca.CertPEM()},
 			ClientCertificates: []settings.ClientCertificate{
 				{Host: "other.example.com", Cert: clientCert, Key: clientKey},
@@ -170,7 +171,7 @@ func TestDownload_Proxy(t *testing.T) {
 
 	t.Run("global proxy is used", func(t *testing.T) {
 		proxied = 0
-		s := settings.Settings{Proxies: []settings.ProxyConfig{{URL: proxyURL}}}
+		s := settings.Settings{SSRFLevel: ssrf.None, Proxies: []settings.ProxyConfig{{URL: proxyURL}}}
 		dst := t.TempDir()
 		d := &Downloader{url: "http://unresolvable.grabber.invalid/file.txt"}
 		if _, err := d.Download(context.Background(), dst, s); err != nil {
@@ -184,7 +185,7 @@ func TestDownload_Proxy(t *testing.T) {
 
 	t.Run("host-scoped proxy is used for its host", func(t *testing.T) {
 		proxied = 0
-		s := settings.Settings{Proxies: []settings.ProxyConfig{
+		s := settings.Settings{SSRFLevel: ssrf.None, Proxies: []settings.ProxyConfig{
 			{Host: "unresolvable.grabber.invalid", URL: proxyURL},
 		}}
 		dst := t.TempDir()
@@ -199,7 +200,7 @@ func TestDownload_Proxy(t *testing.T) {
 
 	t.Run("host-scoped proxy is not used for other hosts", func(t *testing.T) {
 		proxied = 0
-		s := settings.Settings{Proxies: []settings.ProxyConfig{
+		s := settings.Settings{SSRFLevel: ssrf.None, Proxies: []settings.ProxyConfig{
 			{Host: "some-other-host.invalid", URL: proxyURL},
 		}}
 		d := &Downloader{url: "http://unresolvable.grabber.invalid/file.txt"}
@@ -221,7 +222,7 @@ func TestDownload_Proxy(t *testing.T) {
 		defer authProxy.Close()
 		apURL, _ := url.Parse(authProxy.URL)
 
-		s := settings.Settings{Proxies: []settings.ProxyConfig{{URL: apURL, Username: "u", Password: "p"}}}
+		s := settings.Settings{SSRFLevel: ssrf.None, Proxies: []settings.ProxyConfig{{URL: apURL, Username: "u", Password: "p"}}}
 		d := &Downloader{url: "http://unresolvable.grabber.invalid/file.txt"}
 		if _, err := d.Download(context.Background(), t.TempDir(), s); err != nil {
 			t.Fatalf("download via authenticated proxy: %v", err)

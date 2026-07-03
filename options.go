@@ -1,11 +1,13 @@
 package grabber
 
 import (
+	"net"
 	"net/http"
 	"net/url"
 
 	"github.com/liamg/grabber/protocols"
 	"github.com/liamg/grabber/settings"
+	"github.com/liamg/grabber/ssrf"
 )
 
 // WithHTTPTransport sets the base transport used by the HTTP and OCI protocols
@@ -79,6 +81,26 @@ func WithHTTPProxyForHost(host string, u *url.URL, username, password string) Op
 			Username: username,
 			Password: password,
 		})
+	}
+}
+
+// WithSSRFProtection sets the SSRF guard level applied to outbound connections
+// (HTTP and OCI at dial time; a pre-fetch check for Git and Mercurial). The
+// guard defaults to ssrf.Internal; pass ssrf.None to disable it. s3/gcs only
+// reach fixed cloud endpoints and are not guarded.
+func WithSSRFProtection(level ssrf.Level) Option {
+	return func(g *Grabber) {
+		g.settings.SSRFLevel = level
+	}
+}
+
+// WithCustomSSRFProtection guards outbound connections with a caller-supplied
+// predicate that reports whether a resolved IP must be blocked. It sets the
+// level to ssrf.Custom.
+func WithCustomSSRFProtection(blocked func(net.IP) bool) Option {
+	return func(g *Grabber) {
+		g.settings.SSRFLevel = ssrf.Custom
+		g.settings.SSRFCustom = blocked
 	}
 }
 

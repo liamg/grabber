@@ -2,13 +2,51 @@ package settings
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"net/url"
 	"testing"
 
 	"github.com/liamg/grabber/internal/testcert"
+	"github.com/liamg/grabber/ssrf"
 )
+
+func TestTransportForHost_SSRFGuard(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("default guard builds a blocking transport with no other config", func(t *testing.T) {
+		// Zero value → Internal; even with nothing else configured we must get a
+		// guarded transport rather than nil.
+		tr, err := Settings{}.TransportForHost("example.com")
+		if err != nil {
+			t.Fatalf("err: %v", err)
+		}
+		if tr == nil {
+			t.Fatal("expected a guarded transport, got nil")
+		}
+		_, derr := tr.DialContext(ctx, "tcp", "127.0.0.1:9")
+		var blocked *ssrf.BlockedAddressError
+		if !errors.As(derr, &blocked) {
+			t.Fatalf("expected the guard to block loopback, got %v", derr)
+		}
+	})
+
+	t.Run("proxy host is exempt from the guard", func(t *testing.T) {
+		proxyURL, _ := url.Parse("http://127.0.0.1:9")
+		s := Settings{Proxies: []ProxyConfig{{URL: proxyURL}}} // Internal default
+		tr, err := s.TransportForHost("example.com")
+		if err != nil {
+			t.Fatalf("err: %v", err)
+		}
+		// Dialing the proxy's own (loopback) address must not be blocked.
+		_, derr := tr.DialContext(ctx, "tcp", "127.0.0.1:9")
+		var blocked *ssrf.BlockedAddressError
+		if errors.As(derr, &blocked) {
+			t.Fatal("proxy address must be exempt from the guard")
+		}
+	})
+}
 
 func TestMatchClientCertificate(t *testing.T) {
 	tests := []struct {
@@ -56,7 +94,7 @@ func TestMatchClientCertificate(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			s := Settings{ClientCertificates: tt.certs}
+			s := Settings{SSRFLevel: ssrf.None, ClientCertificates: tt.certs}
 			got := s.MatchClientCertificate(tt.host)
 			if tt.wantCert == "" {
 				if got != nil {
@@ -98,7 +136,7 @@ func TestMatchProxy(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			s := Settings{Proxies: tt.proxies}
+			s := Settings{SSRFLevel: ssrf.None, Proxies: tt.proxies}
 			got := s.MatchProxy(tt.host)
 			if tt.wantURL == "" {
 				if got != nil {
@@ -171,7 +209,7 @@ func TestTransportForHost(t *testing.T) {
 	}
 
 	t.Run("nothing configured returns nil", func(t *testing.T) {
-		tr, err := Settings{}.TransportForHost("example.com")
+		tr, err := Settings{SSRFLevel: ssrf.None}.TransportForHost("example.com")
 		if err != nil {
 			t.Fatalf("err: %v", err)
 		}
@@ -181,7 +219,7 @@ func TestTransportForHost(t *testing.T) {
 	})
 
 	t.Run("CA pool is applied", func(t *testing.T) {
-		s := Settings{TLSCACerts: [][]byte{ca.CertPEM()}}
+		s := Settings{SSRFLevel: ssrf.None, TLSCACerts: [][]byte{ca.CertPEM()}}
 		tr, err := s.TransportForHost("example.com")
 		if err != nil {
 			t.Fatalf("err: %v", err)
@@ -192,14 +230,14 @@ func TestTransportForHost(t *testing.T) {
 	})
 
 	t.Run("invalid CA PEM errors", func(t *testing.T) {
-		s := Settings{TLSCACerts: [][]byte{[]byte("not a pem")}}
+		s := Settings{SSRFLevel: ssrf.None, TLSCACerts: [][]byte{[]byte("not a pem")}}
 		if _, err := s.TransportForHost("example.com"); err == nil {
 			t.Error("expected error for invalid CA PEM")
 		}
 	})
 
 	t.Run("client certificate is applied for matching host", func(t *testing.T) {
-		s := Settings{ClientCertificates: []ClientCertificate{
+		s := Settings{SSRFLevel: ssrf.None, ClientCertificates: []ClientCertificate{
 			{Host: "example.com", Cert: clientCert, Key: clientKey},
 		}}
 		tr, err := s.TransportForHost("example.com")
@@ -221,7 +259,7 @@ func TestTransportForHost(t *testing.T) {
 	})
 
 	t.Run("invalid client certificate errors", func(t *testing.T) {
-		s := Settings{ClientCertificates: []ClientCertificate{
+		s := Settings{SSRFLevel: ssrf.None, ClientCertificates: []ClientCertificate{
 			{Cert: []byte("bad"), Key: []byte("bad")},
 		}}
 		if _, err := s.TransportForHost("example.com"); err == nil {
@@ -231,7 +269,7 @@ func TestTransportForHost(t *testing.T) {
 
 	t.Run("proxy is applied", func(t *testing.T) {
 		proxyURL, _ := url.Parse("http://proxy.example.com:8080")
-		s := Settings{Proxies: []ProxyConfig{{URL: proxyURL, Username: "u", Password: "p"}}}
+		s := Settings{SSRFLevel: ssrf.None, Proxies: []ProxyConfig{{URL: proxyURL, Username: "u", Password: "p"}}}
 		tr, err := s.TransportForHost("example.com")
 		if err != nil {
 			t.Fatalf("err: %v", err)
@@ -261,7 +299,7 @@ func TestTransportForHost(t *testing.T) {
 			return dialer.DialContext(ctx, network, addr)
 		}
 
-		s := Settings{
+		s := Settings{SSRFLevel: ssrf.None,
 			HTTPTransport: base,
 			TLSCACerts:    [][]byte{ca.CertPEM()},
 		}
@@ -292,7 +330,7 @@ func TestTransportForHost(t *testing.T) {
 
 	t.Run("base transport alone is still cloned and used", func(t *testing.T) {
 		base := http.DefaultTransport.(*http.Transport).Clone()
-		s := Settings{HTTPTransport: base}
+		s := Settings{SSRFLevel: ssrf.None, HTTPTransport: base}
 		tr, err := s.TransportForHost("example.com")
 		if err != nil {
 			t.Fatalf("err: %v", err)

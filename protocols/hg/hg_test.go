@@ -2,11 +2,22 @@ package hg
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/liamg/grabber/settings"
+	"github.com/liamg/grabber/ssrf"
 )
+
+func TestDownload_SSRFBlocksLoopback(t *testing.T) {
+	d := &Downloader{repoURL: "https://127.0.0.1/user/repo"}
+	_, err := d.Download(context.Background(), t.TempDir(), settings.Settings{})
+	var blocked *ssrf.BlockedAddressError
+	if !errors.As(err, &blocked) {
+		t.Fatalf("expected BlockedAddressError, got %v", err)
+	}
+}
 
 func TestDownload_NoSystemFallbackDisablesHg(t *testing.T) {
 	d := &Downloader{repoURL: "https://bitbucket.org/user/repo"}

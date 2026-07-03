@@ -6,12 +6,15 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/liamg/grabber/ssrf"
 )
 
 func TestGrab_FileProtocol_SingleFile(t *testing.T) {
@@ -87,7 +90,7 @@ func TestGrab_HTTPProtocol(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	g := New()
+	g := New(WithSSRFProtection(ssrf.None))
 	dst := filepath.Join(t.TempDir(), "output")
 	err := g.Grab(context.Background(), srv.URL+"/file.txt", dst)
 	if err != nil {
@@ -103,7 +106,7 @@ func TestGrab_AutoExtract_Disabled(t *testing.T) {
 	srcFile := filepath.Join(srcDir, "data.gz")
 	os.WriteFile(srcFile, []byte("not actually gzip"), 0o644)
 
-	g := New(WithAutoExtract(false))
+	g := New(WithAutoExtract(false), WithSSRFProtection(ssrf.None))
 	dst := filepath.Join(t.TempDir(), "output")
 	err := g.Grab(context.Background(), srcFile, dst)
 	if err != nil {
@@ -145,7 +148,7 @@ func TestGrab_AutoExtract_HTTPZip(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	g := New()
+	g := New(WithSSRFProtection(ssrf.None))
 	dst := filepath.Join(t.TempDir(), "output")
 	err := g.Grab(context.Background(), srv.URL+"/pkg.zip", dst)
 	if err != nil {
@@ -278,6 +281,54 @@ func TestWithTLSAndProxyOptions(t *testing.T) {
 	}
 }
 
+func TestSSRFProtectionOptions(t *testing.T) {
+	if lvl := New().settings.SSRFLevel; lvl != ssrf.Default {
+		t.Errorf("expected zero-value (Default) level, got %v", lvl)
+	}
+	// The zero value resolves to an enabled (Internal) guard.
+	if !New().settings.SSRFGuard().Enabled() {
+		t.Error("expected the default guard to be enabled")
+	}
+	if lvl := New(WithSSRFProtection(ssrf.None)).settings.SSRFLevel; lvl != ssrf.None {
+		t.Errorf("expected None, got %v", lvl)
+	}
+	g := New(WithCustomSSRFProtection(func(net.IP) bool { return true }))
+	if g.settings.SSRFLevel != ssrf.Custom || g.settings.SSRFCustom == nil {
+		t.Error("expected Custom level with a predicate set")
+	}
+}
+
+func TestGrab_SSRFProtection(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte("loopback content"))
+	}))
+	defer srv.Close()
+
+	t.Run("blocks loopback by default", func(t *testing.T) {
+		g := New()
+		err := g.Grab(context.Background(), srv.URL+"/file.txt", t.TempDir())
+		if err == nil {
+			t.Fatal("expected the default SSRF guard to block a loopback download")
+		}
+	})
+
+	t.Run("allowed when disabled", func(t *testing.T) {
+		g := New(WithSSRFProtection(ssrf.None))
+		dst := t.TempDir()
+		if err := g.Grab(context.Background(), srv.URL+"/file.txt", dst); err != nil {
+			t.Fatalf("expected success with SSRF disabled: %v", err)
+		}
+		assertFile(t, filepath.Join(dst, "file.txt"), "loopback content")
+	})
+
+	t.Run("custom predicate can block", func(t *testing.T) {
+		g := New(WithCustomSSRFProtection(func(net.IP) bool { return true }))
+		if err := g.Grab(context.Background(), srv.URL+"/file.txt", t.TempDir()); err == nil {
+			t.Fatal("expected the custom predicate to block the download")
+		}
+	})
+}
+
 func TestWithNoSystemFallback(t *testing.T) {
 	if g := New(); g.settings.NoSystemFallback {
 		t.Error("expected NoSystemFallback=false by default")
@@ -339,7 +390,7 @@ func TestGrab_ChecksumFromURL(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	g := New(WithAutoExtract(false))
+	g := New(WithAutoExtract(false), WithSSRFProtection(ssrf.None))
 	dst := filepath.Join(t.TempDir(), "output")
 	err := g.Grab(context.Background(), srv.URL+"/file.txt?checksum=sha256:"+checksum, dst)
 	if err != nil {
@@ -355,7 +406,7 @@ func TestGrab_ChecksumFromURL_Mismatch(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	g := New(WithAutoExtract(false))
+	g := New(WithAutoExtract(false), WithSSRFProtection(ssrf.None))
 	dst := filepath.Join(t.TempDir(), "output")
 	err := g.Grab(context.Background(), srv.URL+"/file.txt?checksum=sha256:0000000000000000000000000000000000000000000000000000000000000000", dst)
 	if err == nil {
@@ -372,7 +423,7 @@ func TestGrabWithSHA256Checksum_Match(t *testing.T) {
 	srcFile := filepath.Join(srcDir, "data.bin")
 	os.WriteFile(srcFile, content, 0o644)
 
-	g := New(WithAutoExtract(false))
+	g := New(WithAutoExtract(false), WithSSRFProtection(ssrf.None))
 	dst := filepath.Join(t.TempDir(), "output")
 	err := g.GrabWithSHA256Checksum(context.Background(), srcFile, dst, checksum)
 	if err != nil {
@@ -387,7 +438,7 @@ func TestGrabWithSHA256Checksum_Mismatch(t *testing.T) {
 	srcFile := filepath.Join(srcDir, "data.bin")
 	os.WriteFile(srcFile, []byte("some content"), 0o644)
 
-	g := New(WithAutoExtract(false))
+	g := New(WithAutoExtract(false), WithSSRFProtection(ssrf.None))
 	dst := filepath.Join(t.TempDir(), "output")
 	err := g.GrabWithSHA256Checksum(context.Background(), srcFile, dst, "0000000000000000000000000000000000000000000000000000000000000000")
 	if err == nil {
@@ -405,7 +456,7 @@ func TestGrabWithSHA256Checksum_OverridesURL(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	g := New(WithAutoExtract(false))
+	g := New(WithAutoExtract(false), WithSSRFProtection(ssrf.None))
 	dst := filepath.Join(t.TempDir(), "output")
 	// URL has a wrong checksum, but explicit is correct — should succeed.
 	err := g.GrabWithSHA256Checksum(context.Background(),
@@ -425,7 +476,7 @@ func TestGrabWithSHA256Checksum(t *testing.T) {
 	srcFile := filepath.Join(srcDir, "data.bin")
 	os.WriteFile(srcFile, content, 0o644)
 
-	g := New(WithAutoExtract(false))
+	g := New(WithAutoExtract(false), WithSSRFProtection(ssrf.None))
 	dst := filepath.Join(t.TempDir(), "output")
 	err := g.GrabWithSHA256Checksum(context.Background(), srcFile, dst, checksum)
 	if err != nil {
@@ -445,7 +496,7 @@ func TestGrab_ChecksumFromURL_DefaultSHA256(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	g := New(WithAutoExtract(false))
+	g := New(WithAutoExtract(false), WithSSRFProtection(ssrf.None))
 	dst := filepath.Join(t.TempDir(), "output")
 	// No "sha256:" prefix — should default to sha256.
 	err := g.Grab(context.Background(), srv.URL+"/file.txt?checksum="+checksum, dst)
