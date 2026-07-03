@@ -172,6 +172,69 @@ func TestDialContext(t *testing.T) {
 	})
 }
 
+func TestAllowlist(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("allowed IP literal bypasses Blocked", func(t *testing.T) {
+		g := New(Internal, nil, "10.0.0.5")
+		if g.Blocked(net.ParseIP("10.0.0.5")) {
+			t.Error("expected allowlisted IP to be permitted")
+		}
+		// A different private IP is still blocked.
+		if !g.Blocked(net.ParseIP("10.0.0.6")) {
+			t.Error("expected non-allowlisted private IP to remain blocked")
+		}
+	})
+
+	t.Run("allowed CIDR bypasses Blocked", func(t *testing.T) {
+		g := New(Internal, nil, "192.168.0.0/16")
+		if g.Blocked(net.ParseIP("192.168.5.5")) {
+			t.Error("expected IP in allowlisted CIDR to be permitted")
+		}
+		if !g.Blocked(net.ParseIP("10.0.0.1")) {
+			t.Error("expected IP outside the CIDR to remain blocked")
+		}
+	})
+
+	t.Run("allowed hostname bypasses CheckHost", func(t *testing.T) {
+		g := New(Internal, nil, "localhost")
+		if err := g.CheckHost(ctx, "localhost"); err != nil {
+			t.Errorf("expected allowlisted hostname to pass CheckHost, got %v", err)
+		}
+		// A non-allowlisted loopback name is still blocked.
+		if err := New(Internal, nil).CheckHost(ctx, "localhost"); err == nil {
+			t.Error("expected non-allowlisted localhost to be blocked")
+		}
+	})
+
+	t.Run("allowed IP literal passes CheckHost", func(t *testing.T) {
+		g := New(Internal, nil, "127.0.0.1")
+		if err := g.CheckHost(ctx, "127.0.0.1"); err != nil {
+			t.Errorf("expected allowlisted IP literal to pass CheckHost, got %v", err)
+		}
+	})
+
+	t.Run("allowed hostname bypasses the dialer", func(t *testing.T) {
+		g := New(Internal, nil, "myhost.internal")
+		dial := g.DialContext(nil)
+		// The host is allowlisted, so the guard does not reject; the dial itself
+		// fails (unresolvable), but not with a BlockedAddressError.
+		_, err := dial(ctx, "tcp", "myhost.internal:9")
+		var blocked *BlockedAddressError
+		if errors.As(err, &blocked) {
+			t.Fatal("allowlisted host must not be blocked by the dialer")
+		}
+	})
+
+	t.Run("unparseable entries are ignored", func(t *testing.T) {
+		g := New(Internal, nil, "", "not a valid entry with spaces")
+		// Still blocks loopback (the junk entries did not open anything up).
+		if !g.Blocked(net.ParseIP("127.0.0.1")) {
+			t.Error("expected loopback to remain blocked")
+		}
+	})
+}
+
 func TestExemptHost(t *testing.T) {
 	if ExemptHost("") != nil {
 		t.Error("empty host should return a nil predicate")

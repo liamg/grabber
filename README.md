@@ -216,6 +216,7 @@ g := grabber.New(
 | `WithHTTPTransport(*http.Transport)` | Base transport for the HTTP/OCI protocols (e.g. with an SSRF-guarded dialer); cloned per download with the TLS/proxy options layered on top |
 | `WithSSRFProtection(ssrf.Level)` | SSRF guard level: `None`, `Loopback`, or `Internal` (default) |
 | `WithCustomSSRFProtection(func(net.IP) bool)` | Guard outbound connections with a custom "is this IP blocked?" predicate |
+| `WithSSRFAllowHosts(hosts...)` | Allowlist hosts/IPs/CIDRs that bypass the SSRF guard |
 | `WithProtocols(...Protocol)` | Override the default set of protocols |
 
 When AWS/GCP credentials are not provided, the respective SDK default credential chains are used (env vars, shared config, IAM roles, etc.).
@@ -239,7 +240,10 @@ Levels (`WithSSRFProtection(level)`):
 | `ssrf.Loopback` | loopback and the unspecified address |
 | `ssrf.Internal` (default) | loopback + private + link-local + ULA + multicast |
 
-Use `WithCustomSSRFProtection(func(net.IP) bool)` for a bespoke policy. The guard
+Specific hosts can be allowlisted with `WithSSRFAllowHosts(...)`, which accepts
+hostnames (matched case-insensitively), IP literals, and CIDR ranges; matching
+targets bypass the guard entirely. Use `WithCustomSSRFProtection(func(net.IP) bool)`
+for a bespoke policy. The guard
 works at two layers: a dialer check on the HTTP/OCI transports (which catches DNS
 rebinding and redirect-to-internal, since each dial is re-checked on the resolved
 IP), and a pre-fetch host check for Git and Mercurial (which use their own

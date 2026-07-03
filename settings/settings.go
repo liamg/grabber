@@ -94,6 +94,10 @@ type Settings struct {
 	// SSRFCustom is the predicate used when SSRFLevel is ssrf.Custom; it reports
 	// whether a resolved IP must be blocked.
 	SSRFCustom func(net.IP) bool
+
+	// SSRFAllow lists hosts that bypass the SSRF guard entirely. Each entry may
+	// be a hostname, an IP literal, or a CIDR range.
+	SSRFAllow []string
 }
 
 // ClientCertificate is a TLS client certificate (PEM-encoded cert and key) for
@@ -382,7 +386,7 @@ func (s Settings) TransportForHost(host string) (*http.Transport, error) {
 // SSRFGuard returns the SSRF guard for these settings (zero level resolves to
 // ssrf.Internal).
 func (s Settings) SSRFGuard() *ssrf.Guard {
-	return ssrf.New(s.SSRFLevel, s.SSRFCustom)
+	return ssrf.New(s.SSRFLevel, s.SSRFCustom, s.SSRFAllow...)
 }
 
 // CheckSSRFHost applies the pre-fetch SSRF check to host, for protocols that do

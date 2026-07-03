@@ -104,6 +104,15 @@ func WithCustomSSRFProtection(blocked func(net.IP) bool) Option {
 	}
 }
 
+// WithSSRFAllowHosts adds hosts that bypass the SSRF guard entirely. Each entry
+// may be a hostname (matched case-insensitively), an IP literal, or a CIDR
+// range (matched against the resolved IP). Repeatable and additive.
+func WithSSRFAllowHosts(hosts ...string) Option {
+	return func(g *Grabber) {
+		g.settings.SSRFAllow = append(g.settings.SSRFAllow, hosts...)
+	}
+}
+
 func WithSparseCheckout(enabled bool) Option {
 	return func(g *Grabber) {
 		g.settings.Git.SparseCheckout = enabled

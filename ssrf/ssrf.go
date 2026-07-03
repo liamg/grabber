@@ -47,17 +47,68 @@ const (
 // Guard decides whether outbound connections to a resolved IP are permitted.
 // The zero Level (Default) resolves to Internal.
 type Guard struct {
-	level  Level
-	custom func(net.IP) bool
+	level      Level
+	custom     func(net.IP) bool
+	allowHosts []string     // exact hostnames (case-insensitive)
+	allowIPs   []net.IP     // exact IP literals
+	allowNets  []*net.IPNet // CIDR ranges
 }
 
 // New returns a Guard for the given level. custom is only consulted when level
 // is Custom. A Default level resolves to Internal.
-func New(level Level, custom func(net.IP) bool) *Guard {
+//
+// allow lists hosts that bypass the guard entirely. Each entry may be a
+// hostname (matched case-insensitively against the target host), an IP literal,
+// or a CIDR range (matched against the resolved IP). Unparseable entries are
+// ignored.
+func New(level Level, custom func(net.IP) bool, allow ...string) *Guard {
 	if level == Default {
 		level = Internal
 	}
-	return &Guard{level: level, custom: custom}
+	g := &Guard{level: level, custom: custom}
+	for _, entry := range allow {
+		entry = strings.TrimSpace(entry)
+		switch {
+		case entry == "":
+			continue
+		case strings.Contains(entry, "/"):
+			if _, n, err := net.ParseCIDR(entry); err == nil {
+				g.allowNets = append(g.allowNets, n)
+			}
+		default:
+			if ip := net.ParseIP(entry); ip != nil {
+				g.allowIPs = append(g.allowIPs, ip)
+			} else {
+				g.allowHosts = append(g.allowHosts, entry)
+			}
+		}
+	}
+	return g
+}
+
+// hostAllowed reports whether host is on the allowlist by name.
+func (g *Guard) hostAllowed(host string) bool {
+	for _, h := range g.allowHosts {
+		if strings.EqualFold(h, host) {
+			return true
+		}
+	}
+	return false
+}
+
+// ipAllowed reports whether ip is on the allowlist by literal or CIDR.
+func (g *Guard) ipAllowed(ip net.IP) bool {
+	for _, a := range g.allowIPs {
+		if a.Equal(ip) {
+			return true
+		}
+	}
+	for _, n := range g.allowNets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }
 
 // Enabled reports whether the guard blocks anything.
@@ -73,6 +124,9 @@ func (g *Guard) Blocked(ip net.IP) bool {
 	}
 	if ip == nil {
 		return true
+	}
+	if g.ipAllowed(ip) {
+		return false
 	}
 	if v4 := ip.To4(); v4 != nil {
 		ip = v4
@@ -116,7 +170,7 @@ func (e *BlockedAddressError) Error() string {
 // this avoids false positives on split-horizon DNS). A DNS failure returns nil:
 // there is nothing to safely block, and the fetch fails on its own.
 func (g *Guard) CheckHost(ctx context.Context, host string) error {
-	if !g.Enabled() || host == "" {
+	if !g.Enabled() || host == "" || g.hostAllowed(host) {
 		return nil
 	}
 
@@ -182,11 +236,20 @@ func (g *Guard) DialContext(exempt func(addr string) bool) func(ctx context.Cont
 	}
 
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
-		if exempt != nil && exempt(addr) {
+		if (exempt != nil && exempt(addr)) || g.hostAllowed(hostOf(addr)) {
 			return plain.DialContext(ctx, network, addr)
 		}
 		return guarded.DialContext(ctx, network, addr)
 	}
+}
+
+// hostOf returns the host portion of a "host:port" address, or the input
+// unchanged if it has no port.
+func hostOf(addr string) string {
+	if h, _, err := net.SplitHostPort(addr); err == nil {
+		return h
+	}
+	return addr
 }
 
 // ExemptHost returns an exempt predicate that matches dial addresses whose host

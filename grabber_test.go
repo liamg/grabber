@@ -327,6 +327,28 @@ func TestGrab_SSRFProtection(t *testing.T) {
 			t.Fatal("expected the custom predicate to block the download")
 		}
 	})
+
+	t.Run("allowlisted host is permitted despite the default guard", func(t *testing.T) {
+		g := New(WithSSRFAllowHosts("127.0.0.1"))
+		dst := t.TempDir()
+		if err := g.Grab(context.Background(), srv.URL+"/file.txt", dst); err != nil {
+			t.Fatalf("expected allowlisted loopback to be permitted: %v", err)
+		}
+		assertFile(t, filepath.Join(dst, "file.txt"), "loopback content")
+	})
+}
+
+func TestWithSSRFAllowHosts(t *testing.T) {
+	g := New(WithSSRFAllowHosts("a.example.com", "10.0.0.0/8"), WithSSRFAllowHosts("1.2.3.4"))
+	want := []string{"a.example.com", "10.0.0.0/8", "1.2.3.4"}
+	if len(g.settings.SSRFAllow) != len(want) {
+		t.Fatalf("expected %d allow entries, got %v", len(want), g.settings.SSRFAllow)
+	}
+	for i, w := range want {
+		if g.settings.SSRFAllow[i] != w {
+			t.Errorf("allow[%d] = %q, want %q", i, g.settings.SSRFAllow[i], w)
+		}
+	}
 }
 
 func TestWithNoSystemFallback(t *testing.T) {
