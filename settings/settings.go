@@ -1,13 +1,17 @@
 package settings
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
+
+	"github.com/liamg/grabber/ssrf"
 )
 
 var Defaults = Settings{
@@ -86,6 +90,21 @@ type Settings struct {
 	// Proxies configure an HTTP proxy for outbound HTTP/OCI/Git(HTTPS) requests,
 	// matched by host (see MatchProxy).
 	Proxies []ProxyConfig
+
+	// SSRFLevel selects the SSRF guard applied to outbound connections. The zero
+	// value resolves to ssrf.Internal, so the guard is on by default; set
+	// ssrf.None to disable it. It guards the HTTP and OCI transports (at dial
+	// time) and is a pre-fetch check for Git and Mercurial. s3/gcs only ever
+	// reach fixed cloud endpoints, so they are not guarded.
+	SSRFLevel ssrf.Level
+
+	// SSRFCustom is the predicate used when SSRFLevel is ssrf.Custom; it reports
+	// whether a resolved IP must be blocked.
+	SSRFCustom func(net.IP) bool
+
+	// SSRFAllow lists hosts that bypass the SSRF guard entirely. Each entry may
+	// be a hostname, an IP literal, or a CIDR range.
+	SSRFAllow []string
 }
 
 // ClientCertificate is a TLS client certificate (PEM-encoded cert and key) for
@@ -323,7 +342,7 @@ func (s Settings) TransportForHost(host string) (*http.Transport, error) {
 	cert := s.MatchClientCertificate(host)
 	proxy := s.MatchProxy(host)
 
-	if s.HTTPTransport == nil && pool == nil && cert == nil && proxy == nil {
+	if s.HTTPTransport == nil && pool == nil && cert == nil && proxy == nil && !s.SSRFGuard().Enabled() {
 		return nil, nil
 	}
 
@@ -358,5 +377,28 @@ func (s Settings) TransportForHost(host string) (*http.Transport, error) {
 		base.Proxy = http.ProxyURL(proxy.ProxyURL())
 	}
 
+	// Guard dialing. When a proxy is configured the transport dials the proxy,
+	// not the target, so the proxy's own address is exempt from the check.
+	if guard := s.SSRFGuard(); guard.Enabled() {
+		var exempt func(string) bool
+		if proxy != nil && proxy.URL != nil {
+			exempt = ssrf.ExemptHost(proxy.URL.Hostname())
+		}
+		base.DialContext = guard.DialContext(exempt)
+	}
+
 	return base, nil
+}
+
+// SSRFGuard returns the SSRF guard for these settings (zero level resolves to
+// ssrf.Internal).
+func (s Settings) SSRFGuard() *ssrf.Guard {
+	return ssrf.New(s.SSRFLevel, s.SSRFCustom, s.SSRFAllow...)
+}
+
+// CheckSSRFHost applies the pre-fetch SSRF check to host, for protocols that do
+// not dial through TransportForHost (Git and Mercurial). It returns nil when
+// the guard is disabled or the host is allowed.
+func (s Settings) CheckSSRFHost(ctx context.Context, host string) error {
+	return s.SSRFGuard().CheckHost(ctx, host)
 }

@@ -240,6 +240,12 @@ func resetDir(dir string) error {
 // into tmpDir, then strips the .git directory and, if d.subdir is set, promotes
 // that subdirectory's contents to the top level.
 func (d *Downloader) gitDownload(ctx context.Context, tmpDir string, s settings.Settings) error {
+	// go-git dials directly (not through our transport), so apply the SSRF guard
+	// as a pre-fetch check on the repo host.
+	if err := s.CheckSSRFHost(ctx, gitURLHost(d.repoURL)); err != nil {
+		return err
+	}
+
 	auth, err := d.resolveAuth(ctx, s)
 	if err != nil {
 		return fmt.Errorf("resolving git auth: %w", err)
@@ -567,6 +573,18 @@ func gitCredentialFill(ctx context.Context, protocol, host string) *http.BasicAu
 		Username: username,
 		Password: password,
 	}
+}
+
+// gitURLHost extracts the network host from any Git URL form (ssh, scp, https).
+// Returns "" when there is no network host (e.g. a local path).
+func gitURLHost(rawURL string) string {
+	if strings.HasPrefix(rawURL, "ssh://") || scpPattern.MatchString(rawURL) {
+		return sshHost(rawURL)
+	}
+	if u, err := url.Parse(rawURL); err == nil {
+		return u.Hostname()
+	}
+	return ""
 }
 
 // sshHost extracts the hostname from an SSH or SCP-style Git URL.

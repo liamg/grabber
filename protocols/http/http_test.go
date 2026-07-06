@@ -13,7 +13,15 @@ import (
 	"testing"
 
 	"github.com/liamg/grabber/settings"
+	"github.com/liamg/grabber/ssrf"
 )
+
+// withoutSSRF disables the SSRF guard, for tests that dial loopback servers and
+// are not exercising the guard itself.
+func withoutSSRF(s settings.Settings) settings.Settings {
+	s.SSRFLevel = ssrf.None
+	return s
+}
 
 func TestDetect(t *testing.T) {
 	p := New()
@@ -82,7 +90,7 @@ func TestDownload(t *testing.T) {
 	d := &Downloader{url: srv.URL + "/test-file.txt"}
 	tmpDir := t.TempDir()
 
-	isFile, err := d.Download(context.Background(), tmpDir, settings.Defaults)
+	isFile, err := d.Download(context.Background(), tmpDir, withoutSSRF(settings.Defaults))
 	if err != nil {
 		t.Fatalf("Download() error: %v", err)
 	}
@@ -117,7 +125,7 @@ func TestDownload_UsesHTTPTransport(t *testing.T) {
 		return dialer.DialContext(ctx, network, addr)
 	}
 
-	s := settings.Defaults
+	s := withoutSSRF(settings.Defaults)
 	s.HTTPTransport = tr
 
 	d := &Downloader{url: srv.URL + "/file.txt"}
@@ -142,7 +150,7 @@ func TestDownload_HTTPTransportCanBlock(t *testing.T) {
 		return nil, errors.New("blocked by transport")
 	}
 
-	s := settings.Defaults
+	s := withoutSSRF(settings.Defaults)
 	s.HTTPTransport = tr
 
 	d := &Downloader{url: srv.URL + "/file.txt"}
@@ -160,7 +168,7 @@ func TestDownload_HTTPError(t *testing.T) {
 	d := &Downloader{url: srv.URL + "/missing.txt"}
 	tmpDir := t.TempDir()
 
-	_, err := d.Download(context.Background(), tmpDir, settings.Defaults)
+	_, err := d.Download(context.Background(), tmpDir, withoutSSRF(settings.Defaults))
 	if err == nil {
 		t.Error("Download() expected error for 404")
 	}
@@ -177,7 +185,7 @@ func TestDownload_WithHTTPSCredentials(t *testing.T) {
 	d := &Downloader{url: srv.URL + "/private/file.txt"}
 	tmpDir := t.TempDir()
 
-	s := settings.Defaults
+	s := withoutSSRF(settings.Defaults)
 	s.HTTPSCredentials = []settings.HTTPSCredential{
 		{Host: "127.0.0.1", Username: "myuser", Password: "mypass"},
 	}
@@ -279,7 +287,7 @@ func TestDownload_WithHTTPSCredentials_NoMatch(t *testing.T) {
 	d := &Downloader{url: srv.URL + "/public/file.txt"}
 	tmpDir := t.TempDir()
 
-	s := settings.Defaults
+	s := withoutSSRF(settings.Defaults)
 	s.HTTPSCredentials = []settings.HTTPSCredential{
 		{Host: "other-host.com", Username: "myuser", Password: "mypass"},
 	}

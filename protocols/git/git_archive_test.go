@@ -14,6 +14,7 @@ import (
 	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
 
 	"github.com/liamg/grabber/settings"
+	"github.com/liamg/grabber/ssrf"
 )
 
 func TestArchiveURL(t *testing.T) {
@@ -176,7 +177,7 @@ func TestFetchArchive_EnvTokenGatedByFallback(t *testing.T) {
 			defer func() { archiveURLOverride = "" }()
 
 			d := &Downloader{repoURL: "https://github.com/org/repo.git", ref: "1111111111111111111111111111111111111111"}
-			if err := d.fetchArchive(context.Background(), t.TempDir(), settings.Settings{NoSystemFallback: tt.noSystemFallback}); err != nil {
+			if err := d.fetchArchive(context.Background(), t.TempDir(), settings.Settings{SSRFLevel: ssrf.None, NoSystemFallback: tt.noSystemFallback}); err != nil {
 				t.Fatalf("fetchArchive: %v", err)
 			}
 			if gotAuth != tt.wantAuthHeader {
@@ -195,7 +196,7 @@ func TestArchiveCredentials_HelperGatedByFallback(t *testing.T) {
 	t.Run("consulted when fallback on", func(t *testing.T) {
 		called := stubCredentialFill(t, sentinel)
 		d := &Downloader{repoURL: u.String()}
-		user, pass, ok := d.archiveCredentials(context.Background(), u, settings.Settings{})
+		user, pass, ok := d.archiveCredentials(context.Background(), u, settings.Settings{SSRFLevel: ssrf.None})
 		if !ok || user != "u" || pass != "p" {
 			t.Fatalf("expected helper creds, got (%q,%q,%v)", user, pass, ok)
 		}
@@ -207,7 +208,7 @@ func TestArchiveCredentials_HelperGatedByFallback(t *testing.T) {
 	t.Run("skipped when fallback off", func(t *testing.T) {
 		called := stubCredentialFill(t, sentinel)
 		d := &Downloader{repoURL: u.String()}
-		_, _, ok := d.archiveCredentials(context.Background(), u, settings.Settings{NoSystemFallback: true})
+		_, _, ok := d.archiveCredentials(context.Background(), u, settings.Settings{SSRFLevel: ssrf.None, NoSystemFallback: true})
 		if ok {
 			t.Error("expected no credentials when fallback off")
 		}
@@ -375,7 +376,7 @@ func TestDownload_ArchiveFallback(t *testing.T) {
 	t.Run("full repo", func(t *testing.T) {
 		dst := t.TempDir()
 		d := &Downloader{repoURL: bareRepo, ref: orphanHash}
-		if _, err := d.Download(context.Background(), dst, settings.Settings{}); err != nil {
+		if _, err := d.Download(context.Background(), dst, settings.Settings{SSRFLevel: ssrf.None}); err != nil {
 			t.Fatalf("download: %v", err)
 		}
 		assertFileContains(t, filepath.Join(dst, "file.txt"), "from-archive")
@@ -386,7 +387,7 @@ func TestDownload_ArchiveFallback(t *testing.T) {
 	t.Run("with subdir", func(t *testing.T) {
 		dst := t.TempDir()
 		d := &Downloader{repoURL: bareRepo, ref: orphanHash, subdir: "sub"}
-		if _, err := d.Download(context.Background(), dst, settings.Settings{}); err != nil {
+		if _, err := d.Download(context.Background(), dst, settings.Settings{SSRFLevel: ssrf.None}); err != nil {
 			t.Fatalf("download: %v", err)
 		}
 		assertFileContains(t, filepath.Join(dst, "inner.txt"), "inner-from-archive")
@@ -411,7 +412,7 @@ func TestDownload_ArchiveFallback_NotAttemptedForNamedRef(t *testing.T) {
 	dst := t.TempDir()
 
 	d := &Downloader{repoURL: bareRepo, ref: "nonexistent-branch"}
-	if _, err := d.Download(context.Background(), dst, settings.Settings{}); err == nil {
+	if _, err := d.Download(context.Background(), dst, settings.Settings{SSRFLevel: ssrf.None}); err == nil {
 		t.Fatal("expected error for nonexistent named ref")
 	}
 	if called {

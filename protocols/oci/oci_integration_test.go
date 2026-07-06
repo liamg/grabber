@@ -17,6 +17,7 @@ import (
 	"oras.land/oras-go/v2/registry/remote"
 
 	"github.com/liamg/grabber/settings"
+	"github.com/liamg/grabber/ssrf"
 )
 
 func startRegistry(t *testing.T) (host string, cleanup func()) {
@@ -163,6 +164,7 @@ func TestOCIIntegration_SingleFileArtifact(t *testing.T) {
 
 	s := settings.Defaults
 	s.OCIPlainHTTP = true
+	s.SSRFLevel = ssrf.None
 
 	dst := t.TempDir()
 	_, err := d.Download(context.Background(), dst, s)
@@ -194,6 +196,7 @@ func TestOCIIntegration_WithCredentials(t *testing.T) {
 
 	s := settings.Defaults
 	s.OCIPlainHTTP = true
+	s.SSRFLevel = ssrf.None
 	s.OCICredentials = []settings.OCICredential{
 		{Registry: registryHost, Username: "user", Password: "pass"},
 	}
@@ -227,6 +230,7 @@ func TestOCIIntegration_MultiLayerArtifact(t *testing.T) {
 
 	s := settings.Defaults
 	s.OCIPlainHTTP = true
+	s.SSRFLevel = ssrf.None
 
 	dst := t.TempDir()
 	_, err := d.Download(context.Background(), dst, s)
@@ -255,6 +259,7 @@ func TestOCIIntegration_LatestTag(t *testing.T) {
 
 	s := settings.Defaults
 	s.OCIPlainHTTP = true
+	s.SSRFLevel = ssrf.None
 
 	dst := t.TempDir()
 	_, err := d.Download(context.Background(), dst, s)
@@ -280,6 +285,7 @@ func TestOCIIntegration_NonexistentTag(t *testing.T) {
 
 	s := settings.Defaults
 	s.OCIPlainHTTP = true
+	s.SSRFLevel = ssrf.None
 
 	_, err := d.Download(context.Background(), t.TempDir(), s)
 	if err == nil {

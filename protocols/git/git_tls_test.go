@@ -1,13 +1,40 @@
 package git
 
 import (
+	"context"
+	"errors"
 	"net/url"
 	"testing"
 
 	gogit "github.com/go-git/go-git/v5"
 
 	"github.com/liamg/grabber/settings"
+	"github.com/liamg/grabber/ssrf"
 )
+
+// TestGitDownload_SSRFBlocksLoopback proves the pre-fetch SSRF check rejects a
+// clone whose host resolves to a blocked address, before any network work.
+func TestGitDownload_SSRFBlocksLoopback(t *testing.T) {
+	d := &Downloader{repoURL: "https://127.0.0.1:1/org/repo.git"}
+
+	t.Run("blocked by default", func(t *testing.T) {
+		_, err := d.Download(context.Background(), t.TempDir(), settings.Settings{})
+		var blocked *ssrf.BlockedAddressError
+		if !errors.As(err, &blocked) {
+			t.Fatalf("expected BlockedAddressError, got %v", err)
+		}
+	})
+
+	t.Run("allowed when disabled", func(t *testing.T) {
+		// With the guard off the clone proceeds and fails on connection, not on
+		// the SSRF check.
+		_, err := d.Download(context.Background(), t.TempDir(), settings.Settings{SSRFLevel: ssrf.None})
+		var blocked *ssrf.BlockedAddressError
+		if errors.As(err, &blocked) {
+			t.Fatal("did not expect an SSRF block when disabled")
+		}
+	})
+}
 
 func TestApplyTLSAndProxy(t *testing.T) {
 	proxyURL, _ := url.Parse("http://proxy.example.com:8080")

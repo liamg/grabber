@@ -27,6 +27,7 @@ Grabber is an alternative to [go-getter](https://github.com/hashicorp/go-getter)
 - **HTTPS credential matching** — configure HTTPS credentials with git-style host/path matching, used automatically for Git and HTTP protocols
 - **SSH-to-HTTPS auto-transform** — automatically convert SSH/SCP Git URLs to HTTPS (useful in CI environments without SSH key access)
 - **Custom TLS and proxying** — trust extra CAs, present mutual-TLS client certificates (per host), and route through HTTP proxies (global or per host) for the HTTP, OCI, and Git protocols — all via functional options, no environment variables
+- **SSRF protection** — outbound fetches are guarded against reaching loopback, link-local (cloud metadata), and private addresses by default; configurable and opt-out via `WithSSRFProtection`
 - **Pure Go** — no system `git` or other CLI tools required (except `hg` for Mercurial; system `git` is used for credential helper support if available)
 - **Checksum verification** — verify downloaded file integrity via URL query param (`?checksum=sha256:abc...`) or the explicit `GrabWithSHA256Checksum()` API
 - **Automatic archive extraction** — downloaded archives are detected and extracted by extension
@@ -213,11 +214,45 @@ g := grabber.New(
 | `WithHTTPProxy(url, user, pass)` | Global HTTP proxy for HTTP, OCI, and Git (HTTPS) requests |
 | `WithHTTPProxyForHost(host, url, user, pass)` | HTTP proxy scoped to a specific host (preferred over the global proxy when it matches) |
 | `WithHTTPTransport(*http.Transport)` | Base transport for the HTTP/OCI protocols (e.g. with an SSRF-guarded dialer); cloned per download with the TLS/proxy options layered on top |
+| `WithSSRFProtection(ssrf.Level)` | SSRF guard level: `None`, `Loopback`, or `Internal` (default) |
+| `WithCustomSSRFProtection(func(net.IP) bool)` | Guard outbound connections with a custom "is this IP blocked?" predicate |
+| `WithSSRFAllowHosts(hosts...)` | Allowlist hosts/IPs/CIDRs that bypass the SSRF guard |
 | `WithProtocols(...Protocol)` | Override the default set of protocols |
 
 When AWS/GCP credentials are not provided, the respective SDK default credential chains are used (env vars, shared config, IAM roles, etc.).
 
 Git clones default to `depth=1` (shallow) for performance, since go-git is slower than system `git` for full clones and full history is rarely needed. Commit hash refs (`?ref=abc1234`) automatically use a full clone so the commit is reachable. URL query parameters (`?depth=1`) override all defaults.
+
+### SSRF Protection
+
+When grabber fetches a URL that an untrusted party controls (for example a
+Terraform module `source` in a CI run), the SSRF guard prevents it from reaching
+addresses that are only meant to be reachable internally. It is **on by default**
+at the `Internal` level — blocking loopback, RFC1918 private ranges, IPv6 ULA,
+link-local (including the `169.254.169.254` cloud metadata endpoint), and
+multicast.
+
+Levels (`WithSSRFProtection(level)`):
+
+| Level | Blocks |
+|-------|--------|
+| `ssrf.None` | nothing (opt out) |
+| `ssrf.Loopback` | loopback and the unspecified address |
+| `ssrf.Internal` (default) | loopback + private + link-local + ULA + multicast |
+
+Specific hosts can be allowlisted with `WithSSRFAllowHosts(...)`, which accepts
+hostnames (matched case-insensitively), IP literals, and CIDR ranges; matching
+targets bypass the guard entirely. Use `WithCustomSSRFProtection(func(net.IP) bool)`
+for a bespoke policy. The guard
+works at two layers: a dialer check on the HTTP/OCI transports (which catches DNS
+rebinding and redirect-to-internal, since each dial is re-checked on the resolved
+IP), and a pre-fetch host check for Git and Mercurial (which use their own
+transports). s3/gcs only ever connect to fixed cloud endpoints, so they are not
+guarded. A configured proxy is exempt (the connection goes to the trusted proxy,
+not the target).
+
+> **Note:** the default blocks `127.0.0.1`/`localhost`, so tests or tools that
+> fetch from a local server must pass `WithSSRFProtection(ssrf.None)`.
 
 ### HTTPS Credential Matching
 

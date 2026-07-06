@@ -109,6 +109,15 @@ func (d *Downloader) Download(ctx context.Context, tmpDir string, s settings.Set
 	if s.NoSystemFallback {
 		return false, errors.New("mercurial support is disabled when system fallback is off (it requires the hg subprocess)")
 	}
+
+	// hg dials in a subprocess (not through our transport), so apply the SSRF
+	// guard as a pre-fetch check on the repo host.
+	if u, err := url.Parse(d.repoURL); err == nil {
+		if err := s.CheckSSRFHost(ctx, u.Hostname()); err != nil {
+			return false, err
+		}
+	}
+
 	if _, err := exec.LookPath("hg"); err != nil {
 		return false, errors.New("hg (Mercurial) executable not found in PATH")
 	}

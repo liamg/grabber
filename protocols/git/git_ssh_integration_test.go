@@ -16,6 +16,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/liamg/grabber/settings"
+	"github.com/liamg/grabber/ssrf"
 )
 
 // generateSSHKeyPair generates an ed25519 SSH key pair and returns
@@ -162,7 +163,7 @@ rm -rf /tmp/working
 	dst := t.TempDir()
 
 	d := &Downloader{repoURL: sshURL}
-	s := settings.Settings{
+	s := settings.Settings{SSRFLevel: ssrf.None,
 		Git: settings.GitConfig{
 			SSHKeys:                   []settings.SSHCredential{{Key: privateKey}},
 			InsecureSkipHostKeyVerify: true,
@@ -183,7 +184,7 @@ rm -rf /tmp/working
 	t.Run("known_hosts mismatch is rejected", func(t *testing.T) {
 		_, wrongHostKey := generateSSHKeyPair(t)
 		d := &Downloader{repoURL: sshURL}
-		s := settings.Settings{
+		s := settings.Settings{SSRFLevel: ssrf.None,
 			Git: settings.GitConfig{
 				SSHKeys:    []settings.SSHCredential{{Key: privateKey}},
 				KnownHosts: append([]byte(host+" "), wrongHostKey...),
@@ -294,7 +295,7 @@ rm -rf /tmp/working
 	dst := t.TempDir()
 
 	d := &Downloader{repoURL: sshURL, subdir: "modules/vpc"}
-	s := settings.Settings{
+	s := settings.Settings{SSRFLevel: ssrf.None,
 		Git: settings.GitConfig{
 			SSHKeys:                   []settings.SSHCredential{{Key: privateKey}},
 			InsecureSkipHostKeyVerify: true,
