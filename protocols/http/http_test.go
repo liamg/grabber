@@ -225,7 +225,7 @@ func TestDownload_Netrc(t *testing.T) {
 	t.Setenv("NETRC", netrcPath)
 
 	d := &Downloader{url: srv.URL + "/file.txt"}
-	s := settings.Defaults
+	s := withoutSSRF(settings.Defaults)
 	s.Netrc = true
 
 	if _, err := d.Download(context.Background(), t.TempDir(), s); err != nil {
@@ -255,7 +255,7 @@ func TestDownload_NetrcDisabled(t *testing.T) {
 
 	d := &Downloader{url: srv.URL + "/file.txt"}
 	// settings.Defaults has Netrc=false — netrc must be ignored.
-	if _, err := d.Download(context.Background(), t.TempDir(), settings.Defaults); err != nil {
+	if _, err := d.Download(context.Background(), t.TempDir(), withoutSSRF(settings.Defaults)); err != nil {
 		t.Fatalf("Download() error: %v", err)
 	}
 	if gotAuth != "" {
