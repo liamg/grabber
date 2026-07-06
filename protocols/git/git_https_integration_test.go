@@ -13,6 +13,7 @@ import (
 
 	"github.com/liamg/grabber/internal/testcert"
 	"github.com/liamg/grabber/settings"
+	"github.com/liamg/grabber/ssrf"
 )
 
 // newGitHTTPSServer serves the given bare repo over the git smart-HTTP
@@ -80,13 +81,13 @@ func TestDownload_GitOverHTTPS_CustomCA(t *testing.T) {
 
 	t.Run("fails without the CA", func(t *testing.T) {
 		d := &Downloader{repoURL: repoURL}
-		if _, err := d.Download(context.Background(), t.TempDir(), settings.Settings{NoSystemFallback: true}); err == nil {
+		if _, err := d.Download(context.Background(), t.TempDir(), settings.Settings{SSRFLevel: ssrf.None, NoSystemFallback: true}); err == nil {
 			t.Fatal("expected TLS verification failure without the custom CA")
 		}
 	})
 
 	t.Run("succeeds with the CA", func(t *testing.T) {
-		s := settings.Settings{
+		s := settings.Settings{SSRFLevel: ssrf.None,
 			NoSystemFallback: true,
 			TLSCACerts:       [][]byte{ca.CertPEM()},
 		}
@@ -119,7 +120,7 @@ func TestDownload_GitOverHTTPS_MutualTLS(t *testing.T) {
 	}
 
 	t.Run("fails without a client certificate", func(t *testing.T) {
-		s := settings.Settings{
+		s := settings.Settings{SSRFLevel: ssrf.None,
 			NoSystemFallback: true,
 			TLSCACerts:       [][]byte{ca.CertPEM()},
 		}
@@ -130,7 +131,7 @@ func TestDownload_GitOverHTTPS_MutualTLS(t *testing.T) {
 	})
 
 	t.Run("succeeds with a host-scoped client certificate", func(t *testing.T) {
-		s := settings.Settings{
+		s := settings.Settings{SSRFLevel: ssrf.None,
 			NoSystemFallback: true,
 			TLSCACerts:       [][]byte{ca.CertPEM()},
 			ClientCertificates: []settings.ClientCertificate{

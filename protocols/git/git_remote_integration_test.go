@@ -13,6 +13,7 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 
 	"github.com/liamg/grabber/settings"
+	"github.com/liamg/grabber/ssrf"
 )
 
 func startGitHTTPServer(t *testing.T) (repoURL string, cleanup func()) {
@@ -148,7 +149,7 @@ func TestDownload_GitOverHTTP_BasicClone(t *testing.T) {
 	dst := t.TempDir()
 	d := &Downloader{repoURL: repoURL}
 
-	_, err := d.Download(context.Background(), dst, settings.Settings{})
+	_, err := d.Download(context.Background(), dst, settings.Settings{SSRFLevel: ssrf.None})
 	if err != nil {
 		t.Fatalf("download: %v", err)
 	}
@@ -169,7 +170,7 @@ func TestDownload_GitOverHTTP_WithRef(t *testing.T) {
 	dst := t.TempDir()
 	d := &Downloader{repoURL: repoURL, ref: "v1.0.0"}
 
-	_, err := d.Download(context.Background(), dst, settings.Settings{})
+	_, err := d.Download(context.Background(), dst, settings.Settings{SSRFLevel: ssrf.None})
 	if err != nil {
 		t.Fatalf("download: %v", err)
 	}
@@ -190,7 +191,7 @@ func TestDownload_GitOverHTTP_WithSubdir(t *testing.T) {
 	dst := t.TempDir()
 	d := &Downloader{repoURL: repoURL, subdir: "sub"}
 
-	_, err := d.Download(context.Background(), dst, settings.Settings{})
+	_, err := d.Download(context.Background(), dst, settings.Settings{SSRFLevel: ssrf.None})
 	if err != nil {
 		t.Fatalf("download: %v", err)
 	}
@@ -211,7 +212,7 @@ func TestDownload_GitOverHTTP_WithDepth(t *testing.T) {
 	dst := t.TempDir()
 	d := &Downloader{repoURL: repoURL, depth: 1}
 
-	_, err := d.Download(context.Background(), dst, settings.Settings{})
+	_, err := d.Download(context.Background(), dst, settings.Settings{SSRFLevel: ssrf.None})
 	if err != nil {
 		t.Fatalf("download: %v", err)
 	}
