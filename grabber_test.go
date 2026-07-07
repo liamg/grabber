@@ -351,6 +351,23 @@ func TestWithSSRFAllowHosts(t *testing.T) {
 	}
 }
 
+func TestWithHTTPCredentialRequestFunction(t *testing.T) {
+	if New().settings.HTTPCredentialRequest != nil {
+		t.Error("expected no credential function by default")
+	}
+	g := New(WithHTTPCredentialRequestFunction(func(_ context.Context, _, _, _ string) (*string, *string, bool) {
+		u, p := "u", "p"
+		return &u, &p, true
+	}))
+	if g.settings.HTTPCredentialRequest == nil {
+		t.Fatal("expected the credential function to be set")
+	}
+	user, pass, ok := g.settings.RequestCredential(context.Background(), "https", "h", "/p")
+	if !ok || user != "u" || pass != "p" {
+		t.Errorf("got (%q,%q,%v), want (u,p,true)", user, pass, ok)
+	}
+}
+
 func TestWithNoSystemFallback(t *testing.T) {
 	if g := New(); g.settings.NoSystemFallback {
 		t.Error("expected NoSystemFallback=false by default")

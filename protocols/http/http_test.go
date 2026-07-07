@@ -157,6 +157,65 @@ func TestDownload_HTTPTransportCanBlock(t *testing.T) {
 	}
 }
 
+func TestDownload_DynamicCredentials(t *testing.T) {
+	var gotUser, gotPass string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUser, gotPass, _ = r.BasicAuth()
+		w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+
+	t.Run("used when no static credential matches", func(t *testing.T) {
+		var gotProto, gotHost, gotPath string
+		s := withoutSSRF(settings.Defaults)
+		s.HTTPCredentialRequest = func(_ context.Context, protocol, host, path string) (*string, *string, bool) {
+			gotProto, gotHost, gotPath = protocol, host, path
+			u, p := "dyn-user", "dyn-pass"
+			return &u, &p, true
+		}
+		d := &Downloader{url: srv.URL + "/a/b.txt"}
+		if _, err := d.Download(context.Background(), t.TempDir(), s); err != nil {
+			t.Fatalf("Download: %v", err)
+		}
+		if gotUser != "dyn-user" || gotPass != "dyn-pass" {
+			t.Errorf("server saw (%q,%q), want dynamic creds", gotUser, gotPass)
+		}
+		if gotProto != "http" || gotHost != "127.0.0.1" || gotPath != "/a/b.txt" {
+			t.Errorf("callback args = (%q,%q,%q)", gotProto, gotHost, gotPath)
+		}
+	})
+
+	t.Run("static credential wins over dynamic", func(t *testing.T) {
+		s := withoutSSRF(settings.Defaults)
+		s.HTTPSCredentials = []settings.HTTPSCredential{{Host: "127.0.0.1", Username: "static-user", Password: "static-pass"}}
+		s.HTTPCredentialRequest = func(context.Context, string, string, string) (*string, *string, bool) {
+			t.Error("dynamic function must not be consulted when a static credential matches")
+			return nil, nil, false
+		}
+		d := &Downloader{url: srv.URL + "/file.txt"}
+		if _, err := d.Download(context.Background(), t.TempDir(), s); err != nil {
+			t.Fatalf("Download: %v", err)
+		}
+		if gotUser != "static-user" {
+			t.Errorf("server saw user %q, want static-user", gotUser)
+		}
+	})
+
+	t.Run("declining function sends no credentials", func(t *testing.T) {
+		s := withoutSSRF(settings.Defaults)
+		s.HTTPCredentialRequest = func(context.Context, string, string, string) (*string, *string, bool) {
+			return nil, nil, false
+		}
+		d := &Downloader{url: srv.URL + "/file.txt"}
+		if _, err := d.Download(context.Background(), t.TempDir(), s); err != nil {
+			t.Fatalf("Download: %v", err)
+		}
+		if gotUser != "" || gotPass != "" {
+			t.Errorf("expected no credentials, server saw (%q,%q)", gotUser, gotPass)
+		}
+	})
+}
+
 func TestDownload_HTTPError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)

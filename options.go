@@ -104,6 +104,19 @@ func WithCustomSSRFProtection(blocked func(net.IP) bool) Option {
 	}
 }
 
+// WithHTTPCredentialRequestFunction sets a callback that resolves HTTP
+// basic-auth credentials dynamically for the HTTP, Git (HTTPS), and OCI
+// protocols. It is consulted only when no static credential matches (and before
+// the system git credential helper). The callback receives the protocol, host,
+// and path, and returns the username and password (either may be nil) plus ok;
+// returning ok=false defers to the next credential source. This is the
+// in-memory replacement for an on-disk git credential helper.
+func WithHTTPCredentialRequestFunction(f settings.CredentialRequestFunc) Option {
+	return func(g *Grabber) {
+		g.settings.HTTPCredentialRequest = f
+	}
+}
+
 // WithSSRFAllowHosts adds hosts that bypass the SSRF guard entirely. Each entry
 // may be a hostname (matched case-insensitively), an IP literal, or a CIDR
 // range (matched against the resolved IP). Repeatable and additive.

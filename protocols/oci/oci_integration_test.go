@@ -209,6 +209,44 @@ func TestOCIIntegration_WithCredentials(t *testing.T) {
 	assertFileContent(t, filepath.Join(dst, "hello.txt"), "authed content")
 }
 
+// TestOCIIntegration_DynamicCredentials exercises the dynamic credential path
+// for OCI: no static credential, so the request function supplies them.
+func TestOCIIntegration_DynamicCredentials(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	registryHost, cleanup := startRegistry(t)
+	defer cleanup()
+
+	pushTestArtifact(t, registryHost, "test/dyn", "v1.0.0", "hello.txt", []byte("dynamic content"))
+
+	d := &Downloader{
+		ref:      fmt.Sprintf("%s/test/dyn:v1.0.0", registryHost),
+		registry: registryHost,
+	}
+
+	var gotProto, gotHost, gotPath string
+	s := settings.Defaults
+	s.OCIPlainHTTP = true
+	s.SSRFLevel = ssrf.None
+	s.HTTPCredentialRequest = func(_ context.Context, protocol, host, path string) (*string, *string, bool) {
+		gotProto, gotHost, gotPath = protocol, host, path
+		u, p := "user", "pass"
+		return &u, &p, true
+	}
+
+	dst := t.TempDir()
+	if _, err := d.Download(context.Background(), dst, s); err != nil {
+		t.Fatalf("download with dynamic credentials: %v", err)
+	}
+	assertFileContent(t, filepath.Join(dst, "hello.txt"), "dynamic content")
+
+	if gotProto != "oci" || gotHost != registryHost || gotPath != "test/dyn" {
+		t.Errorf("callback args = (%q,%q,%q), want (oci,%q,test/dyn)", gotProto, gotHost, gotPath, registryHost)
+	}
+}
+
 func TestOCIIntegration_MultiLayerArtifact(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")

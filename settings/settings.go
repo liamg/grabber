@@ -98,7 +98,20 @@ type Settings struct {
 	// SSRFAllow lists hosts that bypass the SSRF guard entirely. Each entry may
 	// be a hostname, an IP literal, or a CIDR range.
 	SSRFAllow []string
+
+	// HTTPCredentialRequest resolves HTTP basic-auth credentials dynamically for
+	// the HTTP, Git (HTTPS), and OCI protocols. It is consulted only when no
+	// static credential matches, and before the system fallback. See
+	// CredentialRequestFunc.
+	HTTPCredentialRequest CredentialRequestFunc
 }
+
+// CredentialRequestFunc resolves credentials dynamically for a request. It
+// receives the protocol ("http", "https" or "oci"), the host, and the path, and
+// returns the username and password (either pointer may be nil) plus ok. When
+// ok is false, resolution falls through to the next credential source (e.g. the
+// system git credential helper).
+type CredentialRequestFunc func(ctx context.Context, protocol, host, path string) (username, password *string, ok bool)
 
 // ClientCertificate is a TLS client certificate (PEM-encoded cert and key) for
 // mutual TLS. Matching is by host; a certificate with an empty Host acts as the
@@ -387,6 +400,27 @@ func (s Settings) TransportForHost(host string) (*http.Transport, error) {
 // ssrf.Internal).
 func (s Settings) SSRFGuard() *ssrf.Guard {
 	return ssrf.New(s.SSRFLevel, s.SSRFCustom, s.SSRFAllow...)
+}
+
+// RequestCredential invokes the configured dynamic credential function, if any.
+// It returns ok=false when no function is configured or the function declines,
+// so callers fall through to the next credential source. Nil username/password
+// pointers are normalised to empty strings.
+func (s Settings) RequestCredential(ctx context.Context, protocol, host, path string) (username, password string, ok bool) {
+	if s.HTTPCredentialRequest == nil {
+		return "", "", false
+	}
+	u, p, ok := s.HTTPCredentialRequest(ctx, protocol, host, path)
+	if !ok {
+		return "", "", false
+	}
+	if u != nil {
+		username = *u
+	}
+	if p != nil {
+		password = *p
+	}
+	return username, password, true
 }
 
 // CheckSSRFHost applies the pre-fetch SSRF check to host, for protocols that do

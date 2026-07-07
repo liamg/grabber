@@ -116,6 +116,11 @@ func (d *Downloader) archiveCredentials(ctx context.Context, u *url.URL, s setti
 		return cred.Username, cred.Password, true
 	}
 
+	// Ask the dynamic credential function (before the system fallback).
+	if user, pass, ok := s.RequestCredential(ctx, u.Scheme, u.Hostname(), u.Path); ok {
+		return user, pass, true
+	}
+
 	// The system git credential helper is a system fallback.
 	if !s.NoSystemFallback && (u.Scheme == "https" || u.Scheme == "http") {
 		if auth := credentialFillFunc(ctx, u.Scheme, u.Hostname()); auth != nil {

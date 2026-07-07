@@ -81,9 +81,14 @@ func (d *Downloader) Download(ctx context.Context, tmpDir string, s settings.Set
 		return false, fmt.Errorf("creating request: %w", err)
 	}
 
-	// Apply matching HTTPS credentials if configured.
-	if cred := s.MatchHTTPSCredential(d.url); cred != nil {
-		req.SetBasicAuth(cred.Username, cred.Password)
+	// Resolve credentials: embedded URL userinfo wins; otherwise a configured
+	// static credential; otherwise the dynamic request function.
+	if req.URL.User == nil {
+		if cred := s.MatchHTTPSCredential(d.url); cred != nil {
+			req.SetBasicAuth(cred.Username, cred.Password)
+		} else if user, pass, ok := s.RequestCredential(ctx, req.URL.Scheme, req.URL.Hostname(), req.URL.Path); ok {
+			req.SetBasicAuth(user, pass)
+		}
 	}
 
 	client := http.DefaultClient

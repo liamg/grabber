@@ -85,6 +85,18 @@ func parseOCIURL(rawURL string) (*Downloader, error) {
 	}, nil
 }
 
+// ociRepoPath returns the repository portion of a full reference
+// ("registry/repo:tag" → "repo"), stripping the registry prefix and any
+// tag/digest, for use as the path passed to a dynamic credential function.
+func ociRepoPath(ref, registry string) string {
+	repo := strings.TrimPrefix(ref, registry)
+	repo = strings.TrimPrefix(repo, "/")
+	if i := strings.IndexAny(repo, ":@"); i >= 0 {
+		repo = repo[:i]
+	}
+	return repo
+}
+
 type Downloader struct {
 	ref      string // full reference: registry/repo:tag
 	registry string // registry host
@@ -111,8 +123,16 @@ func (d *Downloader) Download(ctx context.Context, tmpDir string, s settings.Set
 	if err != nil {
 		return false, fmt.Errorf("configuring OCI transport: %w", err)
 	}
-	cred := s.MatchOCICredential(d.registry)
-	hasCreds := cred != nil && (cred.Username != "" || cred.Password != "")
+	// Resolve credentials: a static registry credential wins; otherwise the
+	// dynamic request function.
+	var username, password string
+	hasCreds := false
+	if cred := s.MatchOCICredential(d.registry); cred != nil && (cred.Username != "" || cred.Password != "") {
+		username, password, hasCreds = cred.Username, cred.Password, true
+	} else if user, pass, ok := s.RequestCredential(ctx, "oci", d.registry, ociRepoPath(d.ref, d.registry)); ok {
+		username, password, hasCreds = user, pass, true
+	}
+
 	if tr != nil || hasCreds {
 		// Pass an interface-typed nil (not a typed-nil *http.Transport) when
 		// there is no custom transport, so retry falls back to its default.
@@ -126,8 +146,8 @@ func (d *Downloader) Download(ctx context.Context, tmpDir string, s settings.Set
 		}
 		if hasCreds {
 			authClient.Credential = auth.StaticCredential(d.registry, auth.Credential{
-				Username: cred.Username,
-				Password: cred.Password,
+				Username: username,
+				Password: password,
 			})
 		}
 		repo.Client = authClient

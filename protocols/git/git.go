@@ -446,6 +446,13 @@ func (d *Downloader) resolveAuth(ctx context.Context, s settings.Settings) (tran
 		}, nil
 	}
 
+	// Ask the dynamic credential function (before the system fallback).
+	if u != nil {
+		if user, pass, ok := s.RequestCredential(ctx, u.Scheme, u.Hostname(), u.Path); ok {
+			return &http.BasicAuth{Username: user, Password: pass}, nil
+		}
+	}
+
 	// Try the system git credential helper (e.g. osxkeychain, manager-core).
 	// This is a system fallback and is skipped when disabled.
 	if !s.NoSystemFallback && u != nil && (u.Scheme == "https" || u.Scheme == "http") {
