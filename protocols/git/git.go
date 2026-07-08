@@ -266,6 +266,10 @@ func (d *Downloader) gitDownload(ctx context.Context, tmpDir string, s settings.
 		cloneOpts.Depth = depth
 	}
 
+	if s.Git.RecurseSubmodules {
+		cloneOpts.RecurseSubmodules = git.DefaultSubmoduleRecursionDepth
+	}
+
 	// If we have a ref, set it as the reference to clone.
 	if d.ref != "" {
 		cloneOpts.ReferenceName = plumbing.NewBranchReferenceName(d.ref)

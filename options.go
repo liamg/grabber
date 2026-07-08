@@ -219,6 +219,15 @@ func WithGitSSHToHTTPS() Option {
 	}
 }
 
+// WithGitRecurseSubmodules enables recursive submodule cloning for Git sources,
+// equivalent to `git clone --recursive`. It is off by default, matching plain
+// `git clone`.
+func WithGitRecurseSubmodules(enabled bool) Option {
+	return func(g *Grabber) {
+		g.settings.Git.RecurseSubmodules = enabled
+	}
+}
+
 // WithGitSSHKey sets a default SSH private key used for any host that has no
 // more specific key configured via WithGitSSHKeyForHost.
 func WithGitSSHKey(key []byte) Option {

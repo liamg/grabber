@@ -159,6 +159,7 @@ type GitConfig struct {
 	SparseCheckout            bool            // only fetch the subdirectory specified via // syntax
 	InsecureSkipHostKeyVerify bool            // skip SSH host key verification
 	SSHToHTTPS                bool            // convert SSH/SCP Git URLs to HTTPS before cloning
+	RecurseSubmodules         bool            // recursively clone submodules (like git clone --recursive)
 }
 
 // SSHCredential represents an SSH private key for Git over SSH.
