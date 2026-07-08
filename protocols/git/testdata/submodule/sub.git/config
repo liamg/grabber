@@ -1,0 +1,8 @@
+[core]
+	repositoryformatversion = 0
+	filemode = true
+	bare = true
+	ignorecase = true
+	precomposeunicode = true
+[remote "origin"]
+	url = /var/folders/y8/tw6djmbx1934c099rxf1bktc0000gn/T/tmp.YiBRGhohka/sub-work

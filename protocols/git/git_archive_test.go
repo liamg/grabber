@@ -216,6 +216,25 @@ func TestArchiveCredentials_HelperGatedByFallback(t *testing.T) {
 			t.Error("helper must not be consulted when fallback off")
 		}
 	})
+
+	t.Run("dynamic function used before the helper", func(t *testing.T) {
+		called := stubCredentialFill(t, sentinel)
+		s := settings.Settings{
+			SSRFLevel: ssrf.None,
+			HTTPCredentialRequest: func(context.Context, string, string, string) (*string, *string, bool) {
+				dyn, pass := "dyn", "dynpass"
+				return &dyn, &pass, true
+			},
+		}
+		dl := &Downloader{repoURL: u.String()}
+		user, pw, ok := dl.archiveCredentials(context.Background(), u, s)
+		if !ok || user != "dyn" || pw != "dynpass" {
+			t.Fatalf("got (%q,%q,%v), want dynamic creds", user, pw, ok)
+		}
+		if *called {
+			t.Error("helper must not be consulted once the dynamic function returns credentials")
+		}
+	})
 }
 
 // makeArchive builds a gzip'd tar with a single top-level directory topDir and

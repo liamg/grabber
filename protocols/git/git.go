@@ -266,6 +266,10 @@ func (d *Downloader) gitDownload(ctx context.Context, tmpDir string, s settings.
 		cloneOpts.Depth = depth
 	}
 
+	if s.Git.RecurseSubmodules {
+		cloneOpts.RecurseSubmodules = git.DefaultSubmoduleRecursionDepth
+	}
+
 	// If we have a ref, set it as the reference to clone.
 	if d.ref != "" {
 		cloneOpts.ReferenceName = plumbing.NewBranchReferenceName(d.ref)
@@ -444,6 +448,13 @@ func (d *Downloader) resolveAuth(ctx context.Context, s settings.Settings) (tran
 			Username: cred.Username,
 			Password: cred.Password,
 		}, nil
+	}
+
+	// Ask the dynamic credential function (before the system fallback).
+	if u != nil {
+		if user, pass, ok := s.RequestCredential(ctx, u.Scheme, u.Hostname(), u.Path); ok {
+			return &http.BasicAuth{Username: user, Password: pass}, nil
+		}
 	}
 
 	// Try the system git credential helper (e.g. osxkeychain, manager-core).

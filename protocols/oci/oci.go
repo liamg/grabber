@@ -86,6 +86,18 @@ func parseOCIURL(rawURL string) (*Downloader, error) {
 	}, nil
 }
 
+// ociRepoPath returns the repository portion of a full reference
+// ("registry/repo:tag" → "repo"), stripping the registry prefix and any
+// tag/digest, for use as the path passed to a dynamic credential function.
+func ociRepoPath(ref, registry string) string {
+	repo := strings.TrimPrefix(ref, registry)
+	repo = strings.TrimPrefix(repo, "/")
+	if i := strings.IndexAny(repo, ":@"); i >= 0 {
+		repo = repo[:i]
+	}
+	return repo
+}
+
 type Downloader struct {
 	ref      string // full reference: registry/repo:tag
 	registry string // registry host
@@ -112,17 +124,21 @@ func (d *Downloader) Download(ctx context.Context, tmpDir string, s settings.Set
 	if err != nil {
 		return false, fmt.Errorf("configuring OCI transport: %w", err)
 	}
-	// Resolve credentials: an explicit OCI credential matched for this registry
-	// takes precedence, otherwise fall back to netrc (when enabled).
+	// Resolve credentials: a static registry credential wins; otherwise the
+	// dynamic request function; otherwise netrc (when enabled).
 	var username, password string
-	if cred := s.MatchOCICredential(d.registry); cred != nil {
-		username, password = cred.Username, cred.Password
+	hasCreds := false
+	if cred := s.MatchOCICredential(d.registry); cred != nil && (cred.Username != "" || cred.Password != "") {
+		username, password, hasCreds = cred.Username, cred.Password, true
+	} else if user, pass, ok := s.RequestCredential(ctx, "oci", d.registry, ociRepoPath(d.ref, d.registry)); ok {
+		username, password, hasCreds = user, pass, true
 	} else if s.Netrc {
 		if m, err := netrc.Lookup(d.registry); err == nil && m != nil {
 			username, password = m.Login, m.Password
+			hasCreds = username != "" || password != ""
 		}
 	}
-	hasCreds := username != "" || password != ""
+
 	if tr != nil || hasCreds {
 		// Pass an interface-typed nil (not a typed-nil *http.Transport) when
 		// there is no custom transport, so retry falls back to its default.

@@ -207,6 +207,7 @@ g := grabber.New(
 | `WithOCIPlainHTTP()` | Use HTTP instead of HTTPS for OCI registries |
 | `WithHTTPSCredential(host, user, pass)` | Add an HTTPS credential matched by host |
 | `WithHTTPSCredentialForPath(host, path, user, pass)` | Add an HTTPS credential matched by host and path prefix |
+| `WithHTTPCredentialRequestFunction(f)` | Resolve credentials dynamically (HTTP/Git/OCI) when no static credential matches — an in-memory replacement for an on-disk git credential helper |
 | `WithGitSSHToHTTPS()` | Auto-convert SSH/SCP Git URLs to HTTPS before cloning |
 | `WithTLSCACert(pem)` | Trust an additional CA for HTTPS connections (HTTP, OCI, and Git protocols); repeatable |
 | `WithClientCertificate(certPEM, keyPEM)` | Default TLS client certificate for mutual TLS |
@@ -257,6 +258,8 @@ not the target).
 ### HTTPS Credential Matching
 
 HTTPS credentials are matched using git-style semantics: host must match (case-insensitive), and if a path is specified it must be a prefix of the URL path. The most specific match (longest path prefix) wins.
+
+Credentials for HTTP, Git-over-HTTPS, and OCI are resolved in this order: credentials embedded in the URL → a matching static credential (`WithHTTPSCredential`/`WithOCICredentials`) → the dynamic function from `WithHTTPCredentialRequestFunction` (consulted only when nothing static matches) → the system git credential helper (unless disabled via `WithNoSystemFallback`). The dynamic function receives the protocol, host, and path and returns a username/password (either may be nil) plus a boolean; returning `false` defers to the next source.
 
 ```go
 g := grabber.New(

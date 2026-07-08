@@ -4,6 +4,22 @@ import (
 	"testing"
 )
 
+func TestOCIRepoPath(t *testing.T) {
+	tests := []struct {
+		ref, registry, want string
+	}{
+		{"ghcr.io/org/repo:v1.0.0", "ghcr.io", "org/repo"},
+		{"ghcr.io/org/repo@sha256:abc", "ghcr.io", "org/repo"},
+		{"ghcr.io/org/repo", "ghcr.io", "org/repo"},
+		{"reg:5000/repo:latest", "reg:5000", "repo"},
+	}
+	for _, tt := range tests {
+		if got := ociRepoPath(tt.ref, tt.registry); got != tt.want {
+			t.Errorf("ociRepoPath(%q, %q) = %q, want %q", tt.ref, tt.registry, got, tt.want)
+		}
+	}
+}
+
 func TestDetect(t *testing.T) {
 	p := New()
 
