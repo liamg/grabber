@@ -75,6 +75,9 @@ Use `//` to specify a subdirectory: `github.com/user/repo//modules/vpc?ref=v1.0.
 
 When sparse checkout is enabled, only the specified subdirectory is checked out. Otherwise the full repo is cloned and the subdirectory is extracted.
 
+**Scheme fallback:**
+A clone is first attempted with the URL as given. On failure grabber falls back to the other scheme: an SSH/SCP URL falls back to its HTTPS equivalent, and an HTTPS/HTTP URL falls back to SSH when an SSH key is configured for the host (Azure DevOps SSH URLs are handled specially). `WithGitSSHToHTTPS()` forces the HTTPS form up front instead. Setting `WithConnectProbeTimeout(d)` makes an unreachable primary fail fast so the fallback is tried promptly rather than after a clone timeout.
+
 **Orphaned commit fallback:**
 When `ref` is a commit SHA that the git protocol can't reach (e.g. an orphaned commit that is no longer reachable from any branch or tag), grabber falls back to downloading a tarball of that commit from the hosting platform's HTTP API. GitHub, GitLab, and Bitbucket are supported. Credentials are resolved from the same sources as clones (URL userinfo, configured HTTPS credentials, the git credential helper) and, failing those, from well-known API token environment variables: `GH_TOKEN`/`GITHUB_TOKEN`, `GITLAB_TOKEN`/`GL_TOKEN`, and `BITBUCKET_TOKEN` (unless `WithNoSystemFallback()` is set, which disables the environment-variable lookup). The result is a plain source snapshot with no `.git` directory. SSH keys cannot be used for this HTTP fallback, so SSH-only setups need HTTP credentials configured for private repositories.
 
@@ -208,7 +211,8 @@ g := grabber.New(
 | `WithHTTPSCredential(host, user, pass)` | Add an HTTPS credential matched by host |
 | `WithHTTPSCredentialForPath(host, path, user, pass)` | Add an HTTPS credential matched by host and path prefix |
 | `WithHTTPCredentialRequestFunction(f)` | Resolve credentials dynamically (HTTP/Git/OCI) when no static credential matches — an in-memory replacement for an on-disk git credential helper |
-| `WithGitSSHToHTTPS()` | Auto-convert SSH/SCP Git URLs to HTTPS before cloning |
+| `WithGitSSHToHTTPS()` | Force SSH/SCP Git URLs to HTTPS before cloning (no SSH attempt) |
+| `WithConnectProbeTimeout(d)` | Fast-fail (and trigger the Git ssh↔https fallback) with a short TCP connect probe before a download/clone |
 | `WithTLSCACert(pem)` | Trust an additional CA for HTTPS connections (HTTP, OCI, and Git protocols); repeatable |
 | `WithClientCertificate(certPEM, keyPEM)` | Default TLS client certificate for mutual TLS |
 | `WithClientCertificateForHost(host, certPEM, keyPEM)` | TLS client certificate scoped to a specific host (takes precedence over the default) |

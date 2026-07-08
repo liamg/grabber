@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/liamg/grabber/ssrf"
 )
@@ -104,6 +105,13 @@ type Settings struct {
 	// static credential matches, and before the system fallback. See
 	// CredentialRequestFunc.
 	HTTPCredentialRequest CredentialRequestFunc
+
+	// ConnectProbeTimeout, when > 0, enables a short TCP connect probe to the
+	// target host:port before a download or clone. If the probe fails the fetch
+	// fails fast (rather than hanging until the context deadline), and for Git it
+	// triggers the ssh<->https scheme fallback promptly. The probe is skipped
+	// when a proxy is configured for the host.
+	ConnectProbeTimeout time.Duration
 }
 
 // CredentialRequestFunc resolves credentials dynamically for a request. It
@@ -421,6 +429,27 @@ func (s Settings) RequestCredential(ctx context.Context, protocol, host, path st
 		password = *p
 	}
 	return username, password, true
+}
+
+// ProbeConnect performs a bounded TCP connect to host:port when
+// ConnectProbeTimeout is set, returning an error if the host is unreachable
+// within the timeout. It is a no-op when probing is disabled, the host is
+// empty, or a proxy is configured for the host (the real target is not dialed
+// directly in that case).
+func (s Settings) ProbeConnect(ctx context.Context, host, port string) error {
+	if s.ConnectProbeTimeout <= 0 || host == "" || port == "" {
+		return nil
+	}
+	if s.MatchProxy(host) != nil {
+		return nil
+	}
+	dialer := net.Dialer{Timeout: s.ConnectProbeTimeout}
+	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(host, port))
+	if err != nil {
+		return fmt.Errorf("connect probe to %s failed: %w", net.JoinHostPort(host, port), err)
+	}
+	_ = conn.Close()
+	return nil
 }
 
 // CheckSSRFHost applies the pre-fetch SSRF check to host, for protocols that do

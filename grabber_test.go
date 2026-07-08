@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/liamg/grabber/ssrf"
 )
@@ -365,6 +366,15 @@ func TestWithHTTPCredentialRequestFunction(t *testing.T) {
 	user, pass, ok := g.settings.RequestCredential(context.Background(), "https", "h", "/p")
 	if !ok || user != "u" || pass != "p" {
 		t.Errorf("got (%q,%q,%v), want (u,p,true)", user, pass, ok)
+	}
+}
+
+func TestWithConnectProbeTimeout(t *testing.T) {
+	if d := New().settings.ConnectProbeTimeout; d != 0 {
+		t.Errorf("expected 0 by default, got %v", d)
+	}
+	if d := New(WithConnectProbeTimeout(3 * time.Second)).settings.ConnectProbeTimeout; d != 3*time.Second {
+		t.Errorf("expected 3s, got %v", d)
 	}
 }
 

@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"fmt"
 	"net/http/cgi"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -98,6 +100,39 @@ func TestDownload_GitOverHTTPS_CustomCA(t *testing.T) {
 		}
 		assertFileContains(t, filepath.Join(dst, "file.txt"), "hello")
 	})
+}
+
+// TestDownload_GitOverHTTPS_SSHFallback proves the scheme fallback: an SSH URL
+// whose SSH connection fails falls back to the HTTPS equivalent and clones.
+// sshToHTTPS preserves the port, so an ssh:// URL pointed at the HTTPS git
+// server's port fails the SSH handshake (the port speaks TLS) and the HTTPS
+// fallback then succeeds on the same port.
+func TestDownload_GitOverHTTPS_SSHFallback(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	ca, err := testcert.NewCA()
+	if err != nil {
+		t.Fatalf("creating CA: %v", err)
+	}
+	srv := newGitHTTPSServer(t, ca, createBareRepo(t), false)
+	u, _ := url.Parse(srv.URL)
+	sshURL := fmt.Sprintf("ssh://git@%s/repo.git", u.Host)
+
+	s := settings.Settings{
+		SSRFLevel:        ssrf.None,
+		NoSystemFallback: true, // no ssh-agent / known_hosts reliance
+		TLSCACerts:       [][]byte{ca.CertPEM()},
+		Git:              settings.GitConfig{InsecureSkipHostKeyVerify: true},
+	}
+
+	dst := t.TempDir()
+	d := &Downloader{repoURL: sshURL}
+	if _, err := d.Download(context.Background(), dst, s); err != nil {
+		t.Fatalf("expected clone to succeed via HTTPS fallback: %v", err)
+	}
+	assertFileContains(t, filepath.Join(dst, "file.txt"), "hello")
 }
 
 // TestDownload_GitOverHTTPS_MutualTLS proves a real go-git clone presents the

@@ -200,13 +200,32 @@ func (d *Downloader) Download(ctx context.Context, tmpDir string, s settings.Set
 		return false, errors.New("sparse checkout requires a subdirectory (use // syntax)")
 	}
 
-	// Convert SSH URLs to HTTPS if configured.
-	if s.Git.SSHToHTTPS {
-		d.repoURL = sshToHTTPS(d.repoURL)
-	}
+	// Try each candidate URL in turn (the URL as given, then a scheme fallback).
+	candidates := d.cloneCandidates(s)
 
-	err := d.gitDownload(ctx, tmpDir, s)
-	if err == nil {
+	var errs []error
+	for i, cand := range candidates {
+		if i > 0 {
+			// Clear any partial output from the previous failed attempt.
+			if cleanErr := resetDir(tmpDir); cleanErr != nil {
+				return false, errors.Join(append(errs, cleanErr)...)
+			}
+		}
+
+		// Fail fast (and fall back promptly) if the host is unreachable, rather
+		// than waiting for the clone to time out.
+		host, port := gitHostPort(cand)
+		if probeErr := s.ProbeConnect(ctx, host, port); probeErr != nil {
+			errs = append(errs, probeErr)
+			continue
+		}
+
+		attempt := *d
+		attempt.repoURL = cand
+		if err := attempt.gitDownload(ctx, tmpDir, s); err != nil {
+			errs = append(errs, err)
+			continue
+		}
 		return false, nil
 	}
 
@@ -214,18 +233,74 @@ func (d *Downloader) Download(ctx context.Context, tmpDir string, s settings.Set
 	// platform's HTTP archive endpoint. This handles orphaned commits that are
 	// unreachable via the git protocol but still downloadable via the API.
 	if looksLikeCommitHash(d.ref) {
-		// Clear any partial output from the failed git attempt before
-		// extracting the archive into the same directory.
 		if cleanErr := resetDir(tmpDir); cleanErr != nil {
-			return false, errors.Join(err, cleanErr)
+			return false, errors.Join(append(errs, cleanErr)...)
 		}
 		if archiveErr := d.fetchArchive(ctx, tmpDir, s); archiveErr != nil {
-			return false, errors.Join(err, archiveErr)
+			return false, errors.Join(append(errs, archiveErr)...)
 		}
 		return false, nil
 	}
 
-	return false, err
+	return false, errors.Join(errs...)
+}
+
+// cloneCandidates returns the ordered list of repo URLs to try. The URL is
+// attempted as given first; on failure the loop falls back to the other scheme:
+//
+//   - an SSH/SCP URL falls back to its HTTPS equivalent (always);
+//   - an HTTPS/HTTP URL falls back to SSH only when an SSH key is configured for
+//     the host (otherwise the fallback could not authenticate).
+//
+// WithGitSSHToHTTPS forces the HTTPS form up front with no SSH attempt.
+func (d *Downloader) cloneCandidates(s settings.Settings) []string {
+	orig := d.repoURL
+
+	if s.Git.SSHToHTTPS {
+		return []string{sshToHTTPS(orig)}
+	}
+
+	candidates := []string{orig}
+	if strings.HasPrefix(orig, "ssh://") || scpPattern.MatchString(orig) {
+		if https := sshToHTTPS(orig); https != orig {
+			candidates = append(candidates, https)
+		}
+	} else if u, err := url.Parse(orig); err == nil && (u.Scheme == "https" || u.Scheme == "http") {
+		if s.MatchSSHKey(u.Hostname()) != nil {
+			if sshURL := httpsToSSH(orig); sshURL != "" {
+				candidates = append(candidates, sshURL)
+			}
+		}
+	}
+	return candidates
+}
+
+// gitHostPort returns the host and port a clone of rawURL would connect to,
+// defaulting to 22 for SSH and 443/80 for HTTPS/HTTP. Returns empty strings for
+// local paths (which need no probe).
+func gitHostPort(rawURL string) (host, port string) {
+	if scpPattern.MatchString(rawURL) {
+		return sshHost(rawURL), "22"
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", ""
+	}
+	host = u.Hostname()
+	if host == "" {
+		return "", ""
+	}
+	port = u.Port()
+	switch {
+	case port != "":
+	case u.Scheme == "ssh":
+		port = "22"
+	case u.Scheme == "https":
+		port = "443"
+	case u.Scheme == "http":
+		port = "80"
+	}
+	return host, port
 }
 
 // resetDir removes dir and recreates it empty.
@@ -612,6 +687,36 @@ func sshHost(rawURL string) string {
 	}
 
 	return ""
+}
+
+// httpsToSSH converts an HTTPS Git URL to its SSH equivalent (the reverse of
+// sshToHTTPS), assuming the "git" SSH user. It handles the Azure DevOps special
+// case, where the SSH form differs structurally from HTTPS. Returns "" if the
+// URL cannot be converted.
+//
+// e.g. "https://github.com/user/repo.git" -> "ssh://git@github.com/user/repo.git"
+// e.g. "https://dev.azure.com/org/proj/_git/repo" -> "ssh://git@ssh.dev.azure.com/v3/org/proj/repo"
+func httpsToSSH(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Hostname() == "" {
+		return ""
+	}
+	path := strings.TrimPrefix(u.Path, "/")
+
+	if u.Hostname() == "dev.azure.com" {
+		// https://dev.azure.com/org/project/_git/repo
+		parts := strings.Split(path, "/")
+		if len(parts) >= 4 && parts[2] == "_git" {
+			return fmt.Sprintf("ssh://git@ssh.dev.azure.com/v3/%s/%s/%s", parts[0], parts[1], parts[3])
+		}
+		return ""
+	}
+
+	path = strings.TrimSuffix(path, ".git")
+	if path == "" {
+		return ""
+	}
+	return fmt.Sprintf("ssh://git@%s/%s.git", u.Hostname(), path)
 }
 
 // sshToHTTPS converts SSH and SCP-style Git URLs to HTTPS.

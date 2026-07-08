@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/liamg/grabber/settings"
 	"github.com/liamg/grabber/ssrf"
@@ -212,6 +213,37 @@ func TestDownload_DynamicCredentials(t *testing.T) {
 		}
 		if gotUser != "" || gotPass != "" {
 			t.Errorf("expected no credentials, server saw (%q,%q)", gotUser, gotPass)
+		}
+	})
+}
+
+func TestDownload_ConnectProbe(t *testing.T) {
+	t.Run("unreachable host fails fast via the probe", func(t *testing.T) {
+		s := withoutSSRF(settings.Defaults)
+		s.ConnectProbeTimeout = 500 * time.Millisecond
+		// Port 1 on loopback is closed → the probe fails before any GET.
+		d := &Downloader{url: "http://127.0.0.1:1/file.txt"}
+		start := time.Now()
+		_, err := d.Download(context.Background(), t.TempDir(), s)
+		if err == nil {
+			t.Fatal("expected the probe to fail for an unreachable host")
+		}
+		if elapsed := time.Since(start); elapsed > 5*time.Second {
+			t.Errorf("expected a fast failure, took %v", elapsed)
+		}
+	})
+
+	t.Run("reachable host proceeds", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Write([]byte("ok"))
+		}))
+		defer srv.Close()
+
+		s := withoutSSRF(settings.Defaults)
+		s.ConnectProbeTimeout = 2 * time.Second
+		d := &Downloader{url: srv.URL + "/file.txt"}
+		if _, err := d.Download(context.Background(), t.TempDir(), s); err != nil {
+			t.Fatalf("expected reachable host to succeed: %v", err)
 		}
 	})
 }

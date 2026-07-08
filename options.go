@@ -4,11 +4,24 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"time"
 
 	"github.com/liamg/grabber/protocols"
 	"github.com/liamg/grabber/settings"
 	"github.com/liamg/grabber/ssrf"
 )
+
+// WithConnectProbeTimeout enables a short TCP connect probe (with the given
+// timeout) to the target host before a download or clone. If the host is
+// unreachable the fetch fails fast instead of hanging until the context
+// deadline, and for Git it triggers the ssh<->https fallback promptly. The
+// probe is skipped when a proxy is configured for the host. A zero or negative
+// duration disables it (the default).
+func WithConnectProbeTimeout(d time.Duration) Option {
+	return func(g *Grabber) {
+		g.settings.ConnectProbeTimeout = d
+	}
+}
 
 // WithHTTPTransport sets the base transport used by the HTTP and OCI protocols
 // (and, for its TLS/proxy settings, the Git archive fallback). Use it to

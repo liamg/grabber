@@ -75,6 +75,18 @@ type Downloader struct {
 
 var _ protocols.Downloadable = (*Downloader)(nil)
 
+// httpPort returns the port a request to u connects to, defaulting to 443 for
+// https and 80 otherwise.
+func httpPort(u *url.URL) string {
+	if p := u.Port(); p != "" {
+		return p
+	}
+	if u.Scheme == "https" {
+		return "443"
+	}
+	return "80"
+}
+
 func (d *Downloader) Download(ctx context.Context, tmpDir string, s settings.Settings) (bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, d.url, nil)
 	if err != nil {
@@ -91,12 +103,14 @@ func (d *Downloader) Download(ctx context.Context, tmpDir string, s settings.Set
 		}
 	}
 
-	client := http.DefaultClient
-	host := ""
-	if u, perr := url.Parse(d.url); perr == nil {
-		host = u.Hostname()
+	// Fail fast if the host is unreachable, rather than hanging until the
+	// context deadline.
+	if err := s.ProbeConnect(ctx, req.URL.Hostname(), httpPort(req.URL)); err != nil {
+		return false, err
 	}
-	tr, err := s.TransportForHost(host)
+
+	client := http.DefaultClient
+	tr, err := s.TransportForHost(req.URL.Hostname())
 	if err != nil {
 		return false, fmt.Errorf("configuring HTTP transport: %w", err)
 	}
