@@ -14,7 +14,7 @@ require (
 	github.com/pierrec/lz4/v4 v4.1.25
 	github.com/testcontainers/testcontainers-go v0.40.0
 	github.com/ulikunitz/xz v0.5.15
-	golang.org/x/crypto v0.51.0
+	golang.org/x/crypto v0.52.0
 	golang.org/x/oauth2 v0.35.0
 	google.golang.org/api v0.265.0
 	oras.land/oras-go/v2 v2.6.0
