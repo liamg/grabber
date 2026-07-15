@@ -12,7 +12,7 @@ Grabber is an alternative to [go-getter](https://github.com/hashicorp/go-getter)
 | Programmatic credential injection | ✅ | ❌ (env vars / URL params only) |
 | HTTPS credential matching | ✅ (git-style host/path matching) | ❌ |
 | Git credential helper support | ✅ (via system `git`) | ✅ (shells out to `git`) |
-| SSH-to-HTTPS auto-transform | ✅ | ❌ |
+| SSH↔HTTPS scheme fallback | ✅ | ❌ |
 | OCI registry support | ✅ | ❌ |
 | Checksum verification | ✅ (URL param or explicit API) | ✅ (URL param only) |
 | Pure Go | ✅ (`git` required only if using credential helpers; `hg` required for Mercurial) | ❌ (shells out to git, hg, etc.) |
@@ -25,9 +25,11 @@ Grabber is an alternative to [go-getter](https://github.com/hashicorp/go-getter)
 - **Sparse checkout** — only fetch the subdirectory you need from a Git repo
 - **Programmatic credential injection** — pass SSH keys, AWS credentials, GCP service account keys, OCI registry credentials, and HTTPS credentials via the Go API
 - **HTTPS credential matching** — configure HTTPS credentials with git-style host/path matching, used automatically for Git and HTTP protocols
-- **SSH-to-HTTPS auto-transform** — automatically convert SSH/SCP Git URLs to HTTPS (useful in CI environments without SSH key access)
+- **SSH↔HTTPS scheme fallback** — a clone tries the URL's scheme first, then falls back to the other (SSH→HTTPS always; HTTPS→SSH when a key is configured), so a blocked SSH port or a missing credential doesn't fail the fetch. `WithGitSSHToHTTPS()` forces HTTPS up front, and `WithConnectProbeTimeout` makes the fallback fast
 - **Custom TLS and proxying** — trust extra CAs, present mutual-TLS client certificates (per host), and route through HTTP proxies (global or per host) for the HTTP, OCI, and Git protocols — all via functional options, no environment variables
 - **SSRF protection** — outbound fetches are guarded against reaching loopback, link-local (cloud metadata), and private addresses by default; configurable and opt-out via `WithSSRFProtection`
+- **Lockdown mode** — `WithNoSystemFallback()` disables every ambient credential/execution source (SSH agent, system `git credential` helper, `~/.ssh/known_hosts`, archive env tokens, and the `hg` subprocess) so grabber uses only what you pass it
+- **Dynamic credentials** — resolve HTTP/Git/OCI credentials on demand via `WithHTTPCredentialRequestFunction`, an in-memory replacement for an on-disk git credential helper
 - **Pure Go** — no system `git` or other CLI tools required (except `hg` for Mercurial; system `git` is used for credential helper support if available)
 - **Checksum verification** — verify downloaded file integrity via URL query param (`?checksum=sha256:abc...`) or the explicit `GrabWithSHA256Checksum()` API
 - **Automatic archive extraction** — downloaded archives are detected and extracted by extension
@@ -79,7 +81,7 @@ When sparse checkout is enabled, only the specified subdirectory is checked out.
 A clone is first attempted with the URL as given. On failure grabber falls back to the other scheme: an SSH/SCP URL falls back to its HTTPS equivalent, and an HTTPS/HTTP URL falls back to SSH when an SSH key is configured for the host (Azure DevOps SSH URLs are handled specially). `WithGitSSHToHTTPS()` forces the HTTPS form up front instead. Setting `WithConnectProbeTimeout(d)` makes an unreachable primary fail fast so the fallback is tried promptly rather than after a clone timeout.
 
 **Orphaned commit fallback:**
-When `ref` is a commit SHA that the git protocol can't reach (e.g. an orphaned commit that is no longer reachable from any branch or tag), grabber falls back to downloading a tarball of that commit from the hosting platform's HTTP API. GitHub, GitLab, and Bitbucket are supported. Credentials are resolved from the same sources as clones (URL userinfo, configured HTTPS credentials, the git credential helper) and, failing those, from well-known API token environment variables: `GH_TOKEN`/`GITHUB_TOKEN`, `GITLAB_TOKEN`/`GL_TOKEN`, and `BITBUCKET_TOKEN` (unless `WithNoSystemFallback()` is set, which disables the environment-variable lookup). The result is a plain source snapshot with no `.git` directory. SSH keys cannot be used for this HTTP fallback, so SSH-only setups need HTTP credentials configured for private repositories.
+When `ref` is a commit SHA that the git protocol can't reach (e.g. an orphaned commit that is no longer reachable from any branch or tag), grabber falls back to downloading a tarball of that commit from the hosting platform's HTTP API. GitHub, GitLab, and Bitbucket are supported. Credentials are resolved from the same sources as clones (URL userinfo, configured HTTPS credentials, the dynamic credential function, then the system git credential helper) and, failing those, from well-known API token environment variables: `GH_TOKEN`/`GITHUB_TOKEN`, `GITLAB_TOKEN`/`GL_TOKEN`, and `BITBUCKET_TOKEN` (unless `WithNoSystemFallback()` is set, which disables the environment-variable lookup). The result is a plain source snapshot with no `.git` directory. SSH keys cannot be used for this HTTP fallback, so SSH-only setups need HTTP credentials configured for private repositories.
 
 ### Mercurial
 
@@ -277,9 +279,9 @@ g := grabber.New(
 
 Credentials are applied automatically to both Git (HTTPS clones) and HTTP downloads. For Git, HTTPS credentials are checked after embedded URL credentials but before system `git credential fill`.
 
-### SSH-to-HTTPS Auto-Transform
+### Forcing SSH → HTTPS
 
-When `WithGitSSHToHTTPS()` is enabled, SSH and SCP-style Git URLs are automatically converted to HTTPS before cloning:
+By default grabber tries the URL's own scheme and only falls back on failure (see [Scheme fallback](#git) above). `WithGitSSHToHTTPS()` instead forces SSH and SCP-style Git URLs to HTTPS *up front*, with no SSH attempt:
 
 - `git@github.com:user/repo.git` → `https://github.com/user/repo.git`
 - `ssh://git@github.com/user/repo.git` → `https://github.com/user/repo.git`
