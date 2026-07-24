@@ -476,35 +476,7 @@ var credentialFillFunc = gitCredentialFill
 func (d *Downloader) resolveAuth(ctx context.Context, s settings.Settings) (transport.AuthMethod, error) {
 	// Check for SSH URL.
 	if strings.HasPrefix(d.repoURL, "ssh://") || scpPattern.MatchString(d.repoURL) {
-		hostKeyCallback, err := sshHostKeyCallback(s, sshHost(d.repoURL))
-		if err != nil {
-			return nil, err
-		}
-
-		if key := s.MatchSSHKey(sshHost(d.repoURL)); len(key) > 0 {
-			keys, err := ssh.NewPublicKeys("git", key, "")
-			if err != nil {
-				return nil, fmt.Errorf("parsing SSH key: %w", err)
-			}
-			if hostKeyCallback != nil {
-				keys.HostKeyCallback = hostKeyCallback
-			}
-			return keys, nil
-		}
-
-		// The SSH agent is a system fallback. When it is disabled and no key was
-		// configured, there is no credential to use.
-		if s.NoSystemFallback {
-			return nil, nil
-		}
-		auth, err := ssh.NewSSHAgentAuth("git")
-		if err != nil {
-			return nil, fmt.Errorf("SSH agent auth: %w", err)
-		}
-		if hostKeyCallback != nil {
-			auth.HostKeyCallback = hostKeyCallback
-		}
-		return auth, nil
+		return d.resolveSSHAuth(s)
 	}
 
 	// For HTTPS, check for embedded credentials in the URL.
@@ -541,6 +513,72 @@ func (d *Downloader) resolveAuth(ctx context.Context, s settings.Settings) (tran
 	}
 
 	return nil, nil
+}
+
+// resolveSSHAuth builds the SSH authentication method. A configured key and the
+// SSH agent (when the system fallback is enabled) are combined into a single
+// PublicKeysCallback that offers the configured key first, then the agent's
+// identities. This mirrors ssh: all identities are offered in one handshake and
+// the server picks, so a key the server rejects transparently falls through to
+// the agent - without go-git's one-AuthMethod-per-clone limit forcing a retry.
+// Returns nil (anonymous) when nothing is available.
+func (d *Downloader) resolveSSHAuth(s settings.Settings) (transport.AuthMethod, error) {
+	hostKeyCallback, err := sshHostKeyCallback(s, sshHost(d.repoURL))
+	if err != nil {
+		return nil, err
+	}
+
+	// Parse every applicable configured key (host-specific first, then defaults)
+	// up front; these are offered before the agent.
+	var staticSigners []cryptossh.Signer
+	for _, key := range s.MatchSSHKeys(sshHost(d.repoURL)) {
+		signer, err := cryptossh.ParsePrivateKey(key)
+		if err != nil {
+			return nil, fmt.Errorf("parsing SSH key: %w", err)
+		}
+		staticSigners = append(staticSigners, signer)
+	}
+
+	// The SSH agent is a system fallback, resolved lazily at handshake time. A
+	// missing agent is only an error when there is no configured key to offer
+	// instead.
+	var agentSigners func() ([]cryptossh.Signer, error)
+	if !s.NoSystemFallback {
+		agent, err := ssh.NewSSHAgentAuth("git")
+		switch {
+		case err != nil && len(staticSigners) == 0:
+			return nil, fmt.Errorf("SSH agent auth: %w", err)
+		case err == nil:
+			agentSigners = agent.Callback
+		}
+	}
+
+	if len(staticSigners) == 0 && agentSigners == nil {
+		return nil, nil // anonymous
+	}
+
+	// A single PublicKeysCallback offers every identity - the configured keys
+	// followed by the agent's - in one handshake, so the server picks a usable
+	// one (mirroring ssh) without go-git's one-AuthMethod-per-clone limit forcing
+	// a retry.
+	auth := &ssh.PublicKeysCallback{
+		User: "git",
+		Callback: func() ([]cryptossh.Signer, error) {
+			signers := append([]cryptossh.Signer(nil), staticSigners...)
+			if agentSigners != nil {
+				// A failing agent (e.g. it went away) is skipped so the configured
+				// keys are still offered.
+				if got, err := agentSigners(); err == nil {
+					signers = append(signers, got...)
+				}
+			}
+			return signers, nil
+		},
+	}
+	if hostKeyCallback != nil {
+		auth.HostKeyCallback = hostKeyCallback
+	}
+	return auth, nil
 }
 
 // sshHostKeyCallback selects the SSH host-key verification strategy. A nil

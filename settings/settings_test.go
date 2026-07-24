@@ -171,6 +171,63 @@ func TestMatchSSHKey(t *testing.T) {
 	}
 }
 
+func TestMatchSSHKeys(t *testing.T) {
+	tests := []struct {
+		name string
+		keys []SSHCredential
+		host string
+		want []string // ordered
+	}{
+		{
+			name: "host-specific keys come before defaults",
+			keys: []SSHCredential{
+				{Key: []byte("default1")},
+				{Host: "github.com", Key: []byte("gh")},
+				{Key: []byte("default2")},
+			},
+			host: "github.com",
+			want: []string{"gh", "default1", "default2"},
+		},
+		{
+			name: "all defaults offered for an unmatched host",
+			keys: []SSHCredential{
+				{Key: []byte("default1")},
+				{Host: "github.com", Key: []byte("gh")},
+				{Key: []byte("default2")},
+			},
+			host: "gitlab.com",
+			want: []string{"default1", "default2"},
+		},
+		{
+			name: "host match is case insensitive",
+			keys: []SSHCredential{{Host: "GitHub.com", Key: []byte("gh")}},
+			host: "github.com",
+			want: []string{"gh"},
+		},
+		{
+			name: "no applicable keys",
+			keys: []SSHCredential{{Host: "github.com", Key: []byte("gh")}},
+			host: "gitlab.com",
+			want: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := Settings{Git: GitConfig{SSHKeys: tt.keys}}
+			got := s.MatchSSHKeys(tt.host)
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %d keys, want %d (%q)", len(got), len(tt.want), got)
+			}
+			for i := range got {
+				if !bytes.Equal(got[i], []byte(tt.want[i])) {
+					t.Errorf("key[%d] = %q, want %q", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
 func TestMatchOCICredential(t *testing.T) {
 	tests := []struct {
 		name         string

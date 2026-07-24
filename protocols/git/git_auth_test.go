@@ -141,9 +141,47 @@ func TestResolveAuth_SSHAgentGatedByFallback(t *testing.T) {
 	}
 }
 
+func TestResolveAuth_SSHOffersAllKeys(t *testing.T) {
+	key1, _ := generateSSHKeyPair(t)
+	key2, _ := generateSSHKeyPair(t)
+
+	t.Run("every configured key is offered, agent skipped when absent", func(t *testing.T) {
+		// No agent: NewSSHAgentAuth fails, but keys are configured, so the agent
+		// is skipped rather than erroring, and both keys are offered.
+		t.Setenv("SSH_AUTH_SOCK", "")
+		d := &Downloader{repoURL: "ssh://git@example.com/org/repo.git"}
+		auth, err := d.resolveAuth(context.Background(), settings.Settings{
+			Git: settings.GitConfig{SSHKeys: []settings.SSHCredential{{Key: key1}, {Key: key2}}},
+		})
+		if err != nil {
+			t.Fatalf("resolveAuth: %v", err)
+		}
+		pk, ok := auth.(*ssh.PublicKeysCallback)
+		if !ok {
+			t.Fatalf("expected *ssh.PublicKeysCallback, got %T", auth)
+		}
+		signers, err := pk.Callback()
+		if err != nil {
+			t.Fatalf("callback: %v", err)
+		}
+		if len(signers) != 2 {
+			t.Fatalf("expected both configured keys offered, got %d signers", len(signers))
+		}
+	})
+
+	t.Run("no key and no agent is an error", func(t *testing.T) {
+		t.Setenv("SSH_AUTH_SOCK", "")
+		d := &Downloader{repoURL: "ssh://git@example.com/org/repo.git"}
+		if _, err := d.resolveAuth(context.Background(), settings.Settings{}); err == nil {
+			t.Fatal("expected an error when neither a key nor an agent is available")
+		}
+	})
+}
+
 func TestResolveAuth_SSHKeyUsesHostKeyCallback(t *testing.T) {
 	_, hostAuth := newTestHostKey(t)
 	key, _ := generateSSHKeyPair(t)
+	t.Setenv("SSH_AUTH_SOCK", "")
 
 	d := &Downloader{repoURL: "ssh://git@example.com/org/repo.git"}
 	auth, err := d.resolveAuth(context.Background(), settings.Settings{
@@ -155,9 +193,9 @@ func TestResolveAuth_SSHKeyUsesHostKeyCallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveAuth: %v", err)
 	}
-	pk, ok := auth.(*ssh.PublicKeys)
+	pk, ok := auth.(*ssh.PublicKeysCallback)
 	if !ok {
-		t.Fatalf("expected *ssh.PublicKeys, got %T", auth)
+		t.Fatalf("expected *ssh.PublicKeysCallback, got %T", auth)
 	}
 	if pk.HostKeyCallback == nil {
 		t.Error("expected an in-memory host key callback to be set")
