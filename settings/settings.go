@@ -254,6 +254,26 @@ func (s Settings) MatchSSHKey(host string) []byte {
 	return fallback
 }
 
+// MatchSSHKeys returns every SSH private key applicable to host, ordered most
+// specific first: keys whose Host matches (case-insensitive), followed by keys
+// with an empty Host (defaults that apply to any host). Unlike MatchSSHKey it
+// returns them all, so the caller can offer every identity in a single SSH
+// handshake and let the server choose - mirroring ssh, which offers all
+// configured and default identities rather than just one.
+func (s Settings) MatchSSHKeys(host string) [][]byte {
+	var hostKeys, defaults [][]byte
+	for i := range s.Git.SSHKeys {
+		cred := &s.Git.SSHKeys[i]
+		switch {
+		case cred.Host == "":
+			defaults = append(defaults, cred.Key)
+		case strings.EqualFold(cred.Host, host):
+			hostKeys = append(hostKeys, cred.Key)
+		}
+	}
+	return append(hostKeys, defaults...)
+}
+
 // MatchOCICredential finds the best matching credential for the given registry
 // host. A credential whose Registry matches (case-insensitive) wins; otherwise a
 // credential with an empty Registry is used as the default. Returns nil if none
