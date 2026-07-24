@@ -291,7 +291,15 @@ func (g *Grabber) download(ctx context.Context, url, tmpDir string) (bool, error
 	if prefix, remainder, ok := strings.Cut(url, "::"); ok {
 		for _, protocol := range g.protocols {
 			if protocol.Prefix() == prefix {
-				if downloadable, ok := protocol.Detect(remainder); ok {
+				// The force-prefix commits to this protocol, so let it detect
+				// more permissively than the shared auto-detection path if it
+				// implements ForcedDetector (e.g. s3:: accepting custom
+				// S3-compatible endpoints that a bare URL must not match).
+				detect := protocol.Detect
+				if fd, ok := protocol.(protocols.ForcedDetector); ok {
+					detect = fd.DetectForced
+				}
+				if downloadable, ok := detect(remainder); ok {
 					return downloadable.Download(ctx, tmpDir, g.settings)
 				} else {
 					return false, fmt.Errorf("protocol %q detected but could not handle URL: %w", prefix, ErrUnsupportedURL)

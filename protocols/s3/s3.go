@@ -36,14 +36,32 @@ func (p *Protocol) Priority() int {
 }
 
 func (p *Protocol) Detect(rawURL string) (protocols.Downloadable, bool) {
-	d, err := parseS3URL(rawURL)
+	d, err := parseS3URL(rawURL, false)
 	if err != nil {
 		return nil, false
 	}
 	return d, true
 }
 
-// parseS3URL parses an S3 URL and returns a Downloader.
+var _ protocols.ForcedDetector = (*Protocol)(nil)
+
+// DetectForced handles URLs that carried the "s3::" force-prefix. Because the
+// caller has explicitly committed to S3, it additionally accepts custom
+// S3-compatible endpoints (MinIO, DigitalOcean Spaces, ...) whose host is not an
+// amazonaws.com domain. Auto-detection (Detect) stays strict so a bare
+// https:// URL is never mistaken for S3.
+func (p *Protocol) DetectForced(rawURL string) (protocols.Downloadable, bool) {
+	d, err := parseS3URL(rawURL, true)
+	if err != nil {
+		return nil, false
+	}
+	return d, true
+}
+
+// parseS3URL parses an S3 URL and returns a Downloader. When allowCustomEndpoint
+// is true, a non-amazonaws.com host is treated as a custom S3-compatible
+// endpoint (path-style, bucket = first path segment) rather than rejected; this
+// is only enabled for URLs that used the "s3::" force-prefix.
 //
 // Supported formats:
 //   - s3://bucket/key
@@ -51,7 +69,8 @@ func (p *Protocol) Detect(rawURL string) (protocols.Downloadable, bool) {
 //   - https://s3.us-west-2.amazonaws.com/bucket/key
 //   - https://bucket.s3.amazonaws.com/key
 //   - https://bucket.s3.us-west-2.amazonaws.com/key
-func parseS3URL(rawURL string) (*Downloader, error) {
+//   - https://custom-host/bucket/key            (custom endpoint, forced only)
+func parseS3URL(rawURL string, allowCustomEndpoint bool) (*Downloader, error) {
 	// Handle s3://bucket/key format (AWS CLI style).
 	if strings.HasPrefix(rawURL, "s3://") {
 		path := strings.TrimPrefix(rawURL, "s3://")
@@ -80,7 +99,10 @@ func parseS3URL(rawURL string) (*Downloader, error) {
 
 	host := strings.ToLower(u.Hostname())
 	if !strings.Contains(host, "amazonaws.com") {
-		return nil, errors.New("not an S3 URL")
+		if !allowCustomEndpoint {
+			return nil, errors.New("not an S3 URL")
+		}
+		return parseCustomEndpointURL(u)
 	}
 
 	parts := strings.Split(host, ".")
@@ -133,10 +155,38 @@ func parseS3URL(rawURL string) (*Downloader, error) {
 	}, nil
 }
 
+// parseCustomEndpointURL parses a custom S3-compatible endpoint URL (MinIO,
+// DigitalOcean Spaces, ...) using path-style addressing: the first path segment
+// is the bucket and the remainder is the key. The endpoint is the scheme+host of
+// the URL, and the region comes from the ?region= query (defaulting to
+// us-east-1, which S3-compatible servers generally ignore).
+func parseCustomEndpointURL(u *url.URL) (*Downloader, error) {
+	path := strings.TrimPrefix(u.Path, "/")
+	bucket, key, _ := strings.Cut(path, "/")
+	if bucket == "" {
+		return nil, errors.New("no bucket specified")
+	}
+
+	region := u.Query().Get("region")
+	if region == "" {
+		region = "us-east-1"
+	}
+
+	return &Downloader{
+		bucket:   bucket,
+		key:      key,
+		region:   region,
+		endpoint: u.Scheme + "://" + u.Host,
+	}, nil
+}
+
 type Downloader struct {
 	bucket string
 	key    string
 	region string
+	// endpoint is a custom S3-compatible endpoint (scheme://host). Empty for
+	// real AWS S3, in which case the SDK resolves the endpoint from the region.
+	endpoint string
 }
 
 var _ protocols.Downloadable = (*Downloader)(nil)
@@ -185,7 +235,15 @@ func (d *Downloader) newClient(ctx context.Context, s settings.Settings) (*s3.Cl
 		return nil, err
 	}
 
-	return s3.NewFromConfig(cfg), nil
+	return s3.NewFromConfig(cfg, func(o *s3.Options) {
+		// Custom S3-compatible endpoints (MinIO, DO Spaces, ...) require
+		// path-style addressing and an explicit base endpoint; virtual-hosted
+		// addressing assumes the bucket is a subdomain of an AWS host.
+		if d.endpoint != "" {
+			o.BaseEndpoint = aws.String(d.endpoint)
+			o.UsePathStyle = true
+		}
+	}), nil
 }
 
 func (d *Downloader) downloadFile(ctx context.Context, client *s3.Client, key, dst string) error {
