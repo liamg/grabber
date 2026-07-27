@@ -39,11 +39,8 @@ var errSparseUnsupported = errors.New("remote does not support sparse checkout")
 // bytes. Fetching just the root files instead is not an option: it would
 // silently drop every subdirectory, breaking a module at the repository root
 // that refers to one (e.g. source = "./modules/vpc").
-//
-// Submodule recursion is excluded: go-git resolves submodules through a real
-// worktree, which the sparse path deliberately never materialises.
-func (d *Downloader) sparseEligible(s settings.Settings) bool {
-	return d.subdir != "" && !s.Git.RecurseSubmodules
+func (d *Downloader) sparseEligible() bool {
+	return d.subdir != ""
 }
 
 // sparseDownload materialises only the requested directory into tmpDir, without
@@ -79,16 +76,21 @@ func (d *Downloader) sparseDownload(ctx context.Context, tmpDir string, s settin
 		return err
 	}
 
-	entries, err := d.sparseEntries(repo, commit)
+	sel, err := d.sparseEntries(repo, commit)
 	if err != nil {
 		return err
 	}
 
-	if err := fetchBlobs(ctx, repo, d.repoURL, entries, clientOpts); err != nil {
-		return fmt.Errorf("%w: fetching %d objects: %w", errSparseUnsupported, len(entries), err)
+	if sel.needsWorktree(s) {
+		return fmt.Errorf("%w: %s needs a worktree to initialise",
+			errSparseUnsupported, strings.Join(sel.submodules, ", "))
 	}
 
-	return materialise(repo, entries, tmpDir)
+	if err := fetchBlobs(ctx, repo, d.repoURL, sel.files, clientOpts); err != nil {
+		return fmt.Errorf("%w: fetching %d objects: %w", errSparseUnsupported, len(sel.files), err)
+	}
+
+	return materialise(repo, sel.files, tmpDir)
 }
 
 // sparseClone makes a bare, blobless clone of the repo. Bare because the sparse
@@ -148,7 +150,39 @@ type sparseEntry struct {
 	hash plumbing.Hash
 }
 
-// sparseEntries lists the files to materialise, matching what
+// sparseSelection is what walking the tree for the requested directory turned up.
+type sparseSelection struct {
+	// files are the entries to write to disk.
+	files []sparseEntry
+	// submodules are the paths of any submodule entries within the selection.
+	// A submodule's contents belong to another repository, so they cannot be
+	// written from this object store.
+	submodules []string
+}
+
+// needsWorktree reports whether this selection can only be completed by go-git's
+// worktree path, so the caller must fall back to a full clone.
+//
+// A submodule's contents live in another repository and cannot be written from
+// this object store; only the worktree path can clone and initialise them, and
+// only when the caller asked for recursion. With recursion off a full clone would
+// leave the directory empty too, so narrowing loses nothing and is kept.
+func (sel sparseSelection) needsWorktree(s settings.Settings) bool {
+	return len(sel.submodules) > 0 && s.Git.RecurseSubmodules
+}
+
+// add classifies one tree entry into the selection, ignoring anything that does
+// not become a file on disk (directories, and modes git no longer produces).
+func (sel *sparseSelection) add(p string, e object.TreeEntry) {
+	switch {
+	case e.Mode == filemode.Submodule:
+		sel.submodules = append(sel.submodules, p)
+	case materialisable(e.Mode):
+		sel.files = append(sel.files, sparseEntry{path: p, mode: e.Mode, hash: e.Hash})
+	}
+}
+
+// sparseEntries selects what to materialise, matching what
 // "git sparse-checkout set <subdir>" leaves in a working tree under cone mode:
 // the requested directory in full, plus the files sitting directly in each
 // directory along the path to it (starting at the repository root). Directories
@@ -158,19 +192,17 @@ type sparseEntry struct {
 // An empty subdir selects just the repository's root files. Callers reach this
 // through sparseEligible, which requires a subdir, so in practice a download
 // with no subdir takes the full-clone path instead.
-//
-// Submodule entries are skipped — there is no worktree to initialise them in.
-func (d *Downloader) sparseEntries(repo *git.Repository, commit plumbing.Hash) ([]sparseEntry, error) {
+func (d *Downloader) sparseEntries(repo *git.Repository, commit plumbing.Hash) (sparseSelection, error) {
+	var sel sparseSelection
+
 	c, err := object.GetCommit(repo.Storer, commit)
 	if err != nil {
-		return nil, fmt.Errorf("reading commit %s: %w", commit, err)
+		return sel, fmt.Errorf("reading commit %s: %w", commit, err)
 	}
 	root, err := c.Tree()
 	if err != nil {
-		return nil, fmt.Errorf("reading tree for %s: %w", commit, err)
+		return sel, fmt.Errorf("reading tree for %s: %w", commit, err)
 	}
-
-	var entries []sparseEntry
 
 	// The files sitting directly in each directory along the path to the
 	// requested one, starting at the repository root.
@@ -179,26 +211,22 @@ func (d *Downloader) sparseEntries(repo *git.Repository, commit plumbing.Hash) (
 		if dir != "" {
 			tree, err = root.Tree(dir)
 			if err != nil {
-				return nil, fmt.Errorf("reading tree for %q: %w", dir, err)
+				return sel, fmt.Errorf("reading tree for %q: %w", dir, err)
 			}
 		}
 		for _, e := range tree.Entries {
-			if !materialisable(e.Mode) {
-				continue
-			}
-			p := path.Join(dir, e.Name)
-			entries = append(entries, sparseEntry{path: p, mode: e.Mode, hash: e.Hash})
+			sel.add(path.Join(dir, e.Name), e)
 		}
 	}
 
 	if d.subdir == "" {
-		return entries, nil
+		return sel, nil
 	}
 
 	sub, err := root.Tree(d.subdir)
 	if err != nil {
 		// Not a partial-clone problem: a full clone would not find it either.
-		return nil, fmt.Errorf("subdirectory %q not found in repo: %w", d.subdir, err)
+		return sel, fmt.Errorf("subdirectory %q not found in repo: %w", d.subdir, err)
 	}
 
 	walker := object.NewTreeWalker(sub, true, nil)
@@ -209,19 +237,12 @@ func (d *Downloader) sparseEntries(repo *git.Repository, commit plumbing.Hash) (
 			break
 		}
 		if err != nil {
-			return nil, fmt.Errorf("walking %q: %w", d.subdir, err)
+			return sel, fmt.Errorf("walking %q: %w", d.subdir, err)
 		}
-		if !materialisable(e.Mode) {
-			continue
-		}
-		entries = append(entries, sparseEntry{
-			path: path.Join(d.subdir, name),
-			mode: e.Mode,
-			hash: e.Hash,
-		})
+		sel.add(path.Join(d.subdir, name), e)
 	}
 
-	return entries, nil
+	return sel, nil
 }
 
 // ancestorDirs returns the directories along the path to subdir, from the

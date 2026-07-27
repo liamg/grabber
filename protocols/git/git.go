@@ -350,7 +350,7 @@ func (d *Downloader) gitDownload(ctx context.Context, tmpDir string, s settings.
 	// Sparse checkout downloads only the objects backing the requested
 	// directory. It falls through to a full clone when the remote cannot serve
 	// a partial clone.
-	if d.sparseEligible(s) {
+	if d.sparseEligible() {
 		err := d.sparseDownload(ctx, tmpDir, s, clientOpts)
 		if err == nil {
 			return nil

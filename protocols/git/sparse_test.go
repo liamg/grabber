@@ -12,6 +12,8 @@ import (
 	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/go-git/go-git/v6/plumbing/filemode"
 	"github.com/go-git/go-git/v6/plumbing/object"
+
+	"github.com/liamg/grabber/settings"
 )
 
 // openFixtureRepo opens the shared test repo and returns it with its HEAD
@@ -123,11 +125,11 @@ func TestSparseEntries(t *testing.T) {
 			if err != nil {
 				t.Fatalf("sparseCommit: %v", err)
 			}
-			entries, err := d.sparseEntries(repo, commit)
+			sel, err := d.sparseEntries(repo, commit)
 			if err != nil {
 				t.Fatalf("sparseEntries: %v", err)
 			}
-			assertEqualSlice(t, entryPaths(entries), tt.want)
+			assertEqualSlice(t, entryPaths(sel.files), tt.want)
 		})
 	}
 
@@ -142,11 +144,11 @@ func TestSparseEntries(t *testing.T) {
 		if err != nil {
 			t.Fatalf("sparseCommit: %v", err)
 		}
-		entries, err := d.sparseEntries(nested, commit)
+		sel, err := d.sparseEntries(nested, commit)
 		if err != nil {
 			t.Fatalf("sparseEntries: %v", err)
 		}
-		assertEqualSlice(t, entryPaths(entries),
+		assertEqualSlice(t, entryPaths(sel.files),
 			[]string{"a/a.txt", "a/b/b.txt", "a/b/c/c.txt", "root.txt"})
 	})
 
@@ -159,11 +161,11 @@ func TestSparseEntries(t *testing.T) {
 		if err != nil {
 			t.Fatalf("sparseCommit: %v", err)
 		}
-		entries, err := d.sparseEntries(nested, commit)
+		sel, err := d.sparseEntries(nested, commit)
 		if err != nil {
 			t.Fatalf("sparseEntries: %v", err)
 		}
-		assertEqualSlice(t, entryPaths(entries),
+		assertEqualSlice(t, entryPaths(sel.files),
 			[]string{"a/a.txt", "a/b/b.txt", "a/b/c/c.txt", "root.txt"})
 	})
 
@@ -193,13 +195,13 @@ func TestMaterialise(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sparseCommit: %v", err)
 	}
-	entries, err := d.sparseEntries(repo, commit)
+	sel, err := d.sparseEntries(repo, commit)
 	if err != nil {
 		t.Fatalf("sparseEntries: %v", err)
 	}
 
 	dst := t.TempDir()
-	if err := materialise(repo, entries, dst); err != nil {
+	if err := materialise(repo, sel.files, dst); err != nil {
 		t.Fatalf("materialise: %v", err)
 	}
 
@@ -387,6 +389,131 @@ func TestResolveSubdir(t *testing.T) {
 			if got := resolveSubdir(tt.pathSubdir, tt.querySubdir); got != tt.want {
 				t.Errorf("resolveSubdir(%q, %q) = %q, want %q",
 					tt.pathSubdir, tt.querySubdir, got, tt.want)
+			}
+		})
+	}
+}
+
+// buildSubmoduleFixture creates a repo whose "sub" directory contains a file and
+// a submodule entry (mode 160000), plus a root file. Trees are written directly
+// because a submodule's target commit belongs to another repository and is never
+// present locally, which is exactly the case under test.
+func buildSubmoduleFixture(t *testing.T) (*gogit.Repository, plumbing.Hash) {
+	t.Helper()
+
+	repo, err := gogit.PlainInit(t.TempDir(), true)
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	store := func(o interface {
+		Encode(plumbing.EncodedObject) error
+	}) plumbing.Hash {
+		t.Helper()
+		enc := repo.Storer.NewEncodedObject()
+		if err := o.Encode(enc); err != nil {
+			t.Fatalf("encode: %v", err)
+		}
+		h, err := repo.Storer.SetEncodedObject(enc)
+		if err != nil {
+			t.Fatalf("store: %v", err)
+		}
+		return h
+	}
+
+	blobHash := func(content string) plumbing.Hash {
+		t.Helper()
+		enc := repo.Storer.NewEncodedObject()
+		enc.SetType(plumbing.BlobObject)
+		w, err := enc.Writer()
+		if err != nil {
+			t.Fatalf("blob writer: %v", err)
+		}
+		if _, err := w.Write([]byte(content)); err != nil {
+			t.Fatalf("blob write: %v", err)
+		}
+		_ = w.Close()
+		h, err := repo.Storer.SetEncodedObject(enc)
+		if err != nil {
+			t.Fatalf("blob store: %v", err)
+		}
+		return h
+	}
+
+	rootFile := blobHash("root")
+	nested := blobHash("nested")
+
+	// "sub" holds a real file and a submodule pointing at a commit we do not have.
+	subTree := store(&object.Tree{Entries: []object.TreeEntry{
+		{Name: "mod", Mode: filemode.Submodule, Hash: plumbing.NewHash("1111111111111111111111111111111111111111")},
+		{Name: "nested.txt", Mode: filemode.Regular, Hash: nested},
+	}})
+
+	rootTree := store(&object.Tree{Entries: []object.TreeEntry{
+		{Name: "root.txt", Mode: filemode.Regular, Hash: rootFile},
+		{Name: "sub", Mode: filemode.Dir, Hash: subTree},
+	}})
+
+	sig := object.Signature{Name: "Test", Email: "test@test.com", When: time.Now()}
+	commit := store(&object.Commit{
+		Author: sig, Committer: sig, Message: "with submodule", TreeHash: rootTree,
+	})
+	return repo, commit
+}
+
+// TestSparseEntries_Submodule pins the classification: a submodule inside the
+// selection is reported rather than silently dropped from the file list.
+func TestSparseEntries_Submodule(t *testing.T) {
+	repo, commit := buildSubmoduleFixture(t)
+
+	d := &Downloader{subdir: "sub"}
+	sel, err := d.sparseEntries(repo, commit)
+	if err != nil {
+		t.Fatalf("sparseEntries: %v", err)
+	}
+
+	// The submodule is not a file, so it must not appear as one.
+	assertEqualSlice(t, entryPaths(sel.files), []string{"root.txt", "sub/nested.txt"})
+	assertEqualSlice(t, sel.submodules, []string{"sub/mod"})
+}
+
+// TestSelectionNeedsWorktree drives the decision sparseDownload makes: with
+// recursion requested, a submodule in the selection has to send the download back
+// to the full-clone path, the only one that can populate it. With recursion off,
+// narrowing is kept, since a full clone would leave the directory empty too.
+func TestSelectionNeedsWorktree(t *testing.T) {
+	repo, commit := buildSubmoduleFixture(t)
+
+	withSubmodule, err := (&Downloader{subdir: "sub"}).sparseEntries(repo, commit)
+	if err != nil {
+		t.Fatalf("sparseEntries: %v", err)
+	}
+	if len(withSubmodule.submodules) == 0 {
+		t.Fatal("fixture should contain a submodule")
+	}
+	// Selecting only the root skips the submodule entirely.
+	rootOnly, err := (&Downloader{}).sparseEntries(repo, commit)
+	if err != nil {
+		t.Fatalf("sparseEntries: %v", err)
+	}
+
+	tests := []struct {
+		name      string
+		sel       sparseSelection
+		recursing bool
+		want      bool
+	}{
+		{name: "submodule + recursion needs a worktree", sel: withSubmodule, recursing: true, want: true},
+		{name: "submodule without recursion does not", sel: withSubmodule, recursing: false, want: false},
+		{name: "no submodule + recursion does not", sel: rootOnly, recursing: true, want: false},
+		{name: "no submodule, no recursion does not", sel: rootOnly, recursing: false, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := settings.Settings{Git: settings.GitConfig{RecurseSubmodules: tt.recursing}}
+			if got := tt.sel.needsWorktree(s); got != tt.want {
+				t.Errorf("needsWorktree() = %v, want %v", got, tt.want)
 			}
 		})
 	}
