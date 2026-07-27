@@ -10,6 +10,7 @@ import (
 
 	gogit "github.com/go-git/go-git/v6"
 	"github.com/go-git/go-git/v6/plumbing"
+	"github.com/go-git/go-git/v6/plumbing/filemode"
 	"github.com/go-git/go-git/v6/plumbing/object"
 )
 
@@ -209,6 +210,28 @@ func TestMaterialise(t *testing.T) {
 	// Nothing but the selected files should exist.
 	if _, err := os.Stat(filepath.Join(dst, ".git")); !os.IsNotExist(err) {
 		t.Error("materialise must not create a .git directory")
+	}
+}
+
+// TestMaterialiseMissingObjectFallsBack covers the one way go-git's lack of a
+// promisor engine (go-git#1381) could still bite: a remote that accepts the
+// fetch but does not deliver every object. That must degrade to a full clone,
+// not fail the download.
+func TestMaterialiseMissingObjectFallsBack(t *testing.T) {
+	repo := openFixtureRepo(t)
+
+	missing := []sparseEntry{{
+		path: "sub/never-fetched.txt",
+		mode: filemode.Regular,
+		hash: plumbing.NewHash("0123456789abcdef0123456789abcdef01234567"),
+	}}
+
+	err := materialise(repo, missing, t.TempDir())
+	if err == nil {
+		t.Fatal("expected an error for an undelivered object")
+	}
+	if !errors.Is(err, errSparseUnsupported) {
+		t.Errorf("expected the fallback sentinel so the caller retries with a full clone, got %v", err)
 	}
 }
 

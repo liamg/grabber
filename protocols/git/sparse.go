@@ -304,6 +304,14 @@ func materialise(repo *git.Repository, entries []sparseEntry, destRoot string) e
 			return err
 		}
 		if err := writeBlob(repo, e, dst); err != nil {
+			if errors.Is(err, plumbing.ErrObjectNotFound) {
+				// The remote accepted the request for this object but did not
+				// deliver it, so it cannot really serve objects by hash. Treat it
+				// like any other partial-clone shortfall and fall back to a full
+				// clone rather than failing the download.
+				return fmt.Errorf("%w: object for %s was not delivered: %w",
+					errSparseUnsupported, e.path, err)
+			}
 			return fmt.Errorf("writing %s: %w", e.path, err)
 		}
 	}
