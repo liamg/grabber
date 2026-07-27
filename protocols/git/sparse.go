@@ -71,7 +71,7 @@ func (d *Downloader) sparseDownload(ctx context.Context, tmpDir string, s settin
 		return err
 	}
 
-	commit, err := d.sparseCommit(repo)
+	commit, err := d.sparseCommit(ctx, repo, clientOpts)
 	if err != nil {
 		return err
 	}
@@ -104,7 +104,18 @@ func (d *Downloader) sparseClone(ctx context.Context, cloneDir string, s setting
 		Filter:        packp.FilterBlobNone(),
 		Tags:          d.tagMode(),
 	}
-	if depth := d.resolveDepth(s); depth > 0 {
+	// A pinned commit is fetched by hash after this clone (see
+	// resolvePinnedCommit), so the clone only has to be a cheap anchor: one
+	// commit of the default branch. The non-partial path cannot do that — it has
+	// to find the commit locally — so it keeps full history and every ref.
+	attempts := d.cloneAttempts()
+	depth := d.resolveDepth(s)
+	if looksLikeCommitHash(d.ref) {
+		attempts = []cloneAttempt{{"", true}}
+		depth = 1
+		cloneOpts.Tags = plumbing.NoTags
+	}
+	if depth > 0 {
 		cloneOpts.Depth = depth
 	}
 
@@ -112,7 +123,7 @@ func (d *Downloader) sparseClone(ctx context.Context, cloneDir string, s setting
 		repo *git.Repository
 		err  error
 	)
-	for _, attempt := range d.cloneAttempts() {
+	for _, attempt := range attempts {
 		_ = os.RemoveAll(cloneDir)
 		cloneOpts.ReferenceName = attempt.refName
 		cloneOpts.SingleBranch = attempt.singleBranch
@@ -126,10 +137,24 @@ func (d *Downloader) sparseClone(ctx context.Context, cloneDir string, s setting
 	return nil, fmt.Errorf("%w: partial clone: %w", errSparseUnsupported, err)
 }
 
-// sparseCommit resolves the commit the download is pinned to.
-func (d *Downloader) sparseCommit(repo *git.Repository) (plumbing.Hash, error) {
+// sparseCommit resolves the commit the download is pinned to, fetching whatever
+// the initial shallow clone does not already contain.
+//
+// The clone is a single branch at depth 1, so a pinned commit is usually absent.
+// Rather than deepen it wholesale, each question is answered with the cheapest
+// object set that can answer it:
+//
+//   - A full hash is requested directly, with blob:none so the commit arrives
+//     with its trees (which the file walk needs) but no file contents.
+//   - A short hash has to be matched against the commit graph, and that needs no
+//     trees at all — so history is deepened with tree:0, which sends commit
+//     objects only. Once the full hash is known it is fetched as above.
+//
+// This mirrors what the go-getter fork did with "git fetch --unshallow
+// --filter=tree:0" followed by "git fetch origin <sha> --depth 1".
+func (d *Downloader) sparseCommit(ctx context.Context, repo *git.Repository, clientOpts []client.Option) (plumbing.Hash, error) {
 	if d.ref != "" && looksLikeCommitHash(d.ref) {
-		hash, err := resolveCommitHash(repo, d.ref)
+		hash, err := d.resolvePinnedCommit(ctx, repo, clientOpts)
 		if err != nil {
 			return plumbing.ZeroHash, fmt.Errorf("resolving commit %s: %w", d.ref, err)
 		}
@@ -140,6 +165,55 @@ func (d *Downloader) sparseCommit(repo *git.Repository) (plumbing.Hash, error) {
 		return plumbing.ZeroHash, fmt.Errorf("resolving HEAD: %w", err)
 	}
 	return head.Hash(), nil
+}
+
+// resolvePinnedCommit returns the commit for a hash ref, fetching it (and, for a
+// short hash, the commit graph needed to expand it) if the clone lacks it.
+func (d *Downloader) resolvePinnedCommit(ctx context.Context, repo *git.Repository, clientOpts []client.Option) (plumbing.Hash, error) {
+	// Already resolvable — a short hash whose commit happens to be in the clone,
+	// or a full hash that is.
+	if hash, err := resolveCommitHash(repo, d.ref); err == nil {
+		if err := d.ensureCommitTrees(ctx, repo, hash, clientOpts); err != nil {
+			return plumbing.ZeroHash, err
+		}
+		return hash, nil
+	}
+
+	if len(d.ref) < 40 {
+		// A short hash cannot be requested by name, so deepen the history with
+		// tree:0 — commit objects only, no trees or blobs — and match the prefix
+		// against that graph.
+		head, err := repo.Head()
+		if err != nil {
+			return plumbing.ZeroHash, fmt.Errorf("resolving HEAD: %w", err)
+		}
+		if err := fetchObjects(ctx, repo, d.repoURL,
+			[]plumbing.Hash{head.Hash()}, packp.FilterTreeDepth(0), 0, clientOpts); err != nil {
+			return plumbing.ZeroHash, fmt.Errorf("fetching commit graph: %w", err)
+		}
+	}
+
+	hash, err := resolveCommitHash(repo, d.ref)
+	if err != nil {
+		return plumbing.ZeroHash, err
+	}
+	if err := d.ensureCommitTrees(ctx, repo, hash, clientOpts); err != nil {
+		return plumbing.ZeroHash, err
+	}
+	return hash, nil
+}
+
+// ensureCommitTrees makes sure the commit's trees are present, fetching just
+// that commit with blob:none when they are not. After a tree:0 deepen the commit
+// object exists with no tree behind it, and the file walk needs the trees.
+func (d *Downloader) ensureCommitTrees(ctx context.Context, repo *git.Repository, hash plumbing.Hash, clientOpts []client.Option) error {
+	if c, err := object.GetCommit(repo.Storer, hash); err == nil {
+		if _, err := c.Tree(); err == nil {
+			return nil
+		}
+	}
+	return fetchObjects(ctx, repo, d.repoURL,
+		[]plumbing.Hash{hash}, packp.FilterBlobNone(), 1, clientOpts)
 }
 
 // sparseEntry is one file to write to disk, at its path within the repository.
@@ -293,6 +367,28 @@ func fetchBlobs(ctx context.Context, repo *git.Repository, rawURL string, entrie
 		return nil
 	}
 
+	// No filter: these are the blobs themselves, and depth is irrelevant for
+	// objects requested by hash.
+	return fetchObjects(ctx, repo, rawURL, wants, "", 0, clientOpts)
+}
+
+// fetchObjects asks the remote for the given objects and stores whatever it
+// sends in the repo.
+//
+// filter narrows what the server includes alongside the wants ("" for no
+// filter); depth limits history (0 for no limit). Requesting objects by hash
+// needs the server to allow arbitrary object IDs in "want" — the same
+// requirement the git binary's lazy fetch has, so a remote that supports partial
+// clone at all supports this.
+func fetchObjects(
+	ctx context.Context,
+	repo *git.Repository,
+	rawURL string,
+	wants []plumbing.Hash,
+	filter packp.Filter,
+	depth int,
+	clientOpts []client.Option,
+) error {
 	u, err := transport.ParseURL(rawURL)
 	if err != nil {
 		return err
@@ -310,7 +406,11 @@ func fetchBlobs(ctx context.Context, repo *git.Repository, rawURL string, entrie
 	}
 	defer func() { _ = sess.Close() }()
 
-	return sess.Fetch(ctx, repo.Storer, &transport.FetchRequest{Wants: wants})
+	return sess.Fetch(ctx, repo.Storer, &transport.FetchRequest{
+		Wants:  wants,
+		Filter: filter,
+		Depth:  depth,
+	})
 }
 
 // materialise writes the entries into destRoot, creating parent directories as

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -133,8 +134,13 @@ func (d *Downloader) archiveCredentials(ctx context.Context, u *url.URL, s setti
 
 // extractArchive reads a tar stream and writes its contents into dst. Hosting
 // platform archives wrap everything in a single top-level directory (e.g.
-// "owner-repo-<sha>/") which is stripped. If subdir is non-empty, only entries
-// beneath it are written, with the subdir prefix removed relative to dst.
+// "owner-repo-<sha>/") which is stripped.
+//
+// A non-empty subdir selects the same files the git path would (see
+// sparseEntries): everything beneath subdir, plus the files sitting directly in
+// each directory along the path to it. Entries keep their repository-relative
+// path, so this fallback and the git path produce the same layout, and a caller
+// can merge several subdirectories of one repository into one destination.
 func extractArchive(r io.Reader, dst, subdir string) error {
 	tarR := tar.NewReader(r)
 	topDir := ""
@@ -168,20 +174,22 @@ func extractArchive(r io.Reader, dst, subdir string) error {
 			continue
 		}
 
-		// If a subdir filter is set, skip entries outside it and strip its
-		// prefix so contents land directly in dst.
+		// Skip anything the cone does not select. rel is left untouched, so
+		// entries land at their repository-relative path.
 		if subdir != "" {
-			prefix := strings.TrimRight(subdir, "/") + "/"
-			if !strings.HasPrefix(rel, prefix) {
+			selected, underSubdir := archiveSelects(rel, subdir, hdr.FileInfo().IsDir())
+			if !selected {
 				continue
 			}
-			rel = strings.TrimPrefix(rel, prefix)
-			if rel == "" {
-				continue
+			// Only the requested directory proves it exists; a root-level file
+			// would otherwise mask a bad subdir.
+			if underSubdir {
+				found = true
 			}
+		} else {
+			found = true
 		}
 
-		found = true
 		outPath := filepath.Join(dst, filepath.FromSlash(rel))
 
 		if hdr.FileInfo().IsDir() {
@@ -201,6 +209,34 @@ func extractArchive(r io.Reader, dst, subdir string) error {
 	}
 
 	return nil
+}
+
+// archiveSelects reports whether a repository-relative archive entry belongs to
+// the cone for subdir, mirroring sparseEntries. underSubdir distinguishes an
+// entry inside the requested directory from one of the path-to-it files, so the
+// caller can tell whether the requested directory was present at all.
+func archiveSelects(rel, subdir string, isDir bool) (selected, underSubdir bool) {
+	if rel == subdir || strings.HasPrefix(rel, strings.TrimRight(subdir, "/")+"/") {
+		return true, true
+	}
+
+	// Files sitting directly in one of subdir's ancestor directories, the
+	// repository root included. Directories are skipped: those on the path are
+	// created implicitly by the entries beneath them, and any other would drag in
+	// a sibling branch of the tree.
+	if isDir {
+		return false, false
+	}
+	parent := path.Dir(rel)
+	if parent == "." {
+		parent = ""
+	}
+	for _, dir := range ancestorDirs(subdir) {
+		if parent == dir {
+			return true, false
+		}
+	}
+	return false, false
 }
 
 // writeArchiveFile writes the current tar entry to path, creating parent

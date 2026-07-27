@@ -1,6 +1,7 @@
 package git
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -121,7 +122,7 @@ func TestSparseEntries(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			d := &Downloader{subdir: tt.subdir}
-			commit, err := d.sparseCommit(repo)
+			commit, err := d.sparseCommit(context.Background(), repo, nil)
 			if err != nil {
 				t.Fatalf("sparseCommit: %v", err)
 			}
@@ -140,7 +141,7 @@ func TestSparseEntries(t *testing.T) {
 		// and notably NOT other/other.txt.
 		nested := openNestedFixtureRepo(t)
 		d := &Downloader{subdir: "a/b/c"}
-		commit, err := d.sparseCommit(nested)
+		commit, err := d.sparseCommit(context.Background(), nested, nil)
 		if err != nil {
 			t.Fatalf("sparseCommit: %v", err)
 		}
@@ -157,7 +158,7 @@ func TestSparseEntries(t *testing.T) {
 	t.Run("subdir is recursive", func(t *testing.T) {
 		nested := openNestedFixtureRepo(t)
 		d := &Downloader{subdir: "a"}
-		commit, err := d.sparseCommit(nested)
+		commit, err := d.sparseCommit(context.Background(), nested, nil)
 		if err != nil {
 			t.Fatalf("sparseCommit: %v", err)
 		}
@@ -171,7 +172,7 @@ func TestSparseEntries(t *testing.T) {
 
 	t.Run("missing subdir is a hard error, not a fallback", func(t *testing.T) {
 		d := &Downloader{subdir: "does-not-exist"}
-		commit, err := d.sparseCommit(repo)
+		commit, err := d.sparseCommit(context.Background(), repo, nil)
 		if err != nil {
 			t.Fatalf("sparseCommit: %v", err)
 		}
@@ -191,7 +192,7 @@ func TestMaterialise(t *testing.T) {
 	repo := openFixtureRepo(t)
 	d := &Downloader{subdir: "sub"}
 
-	commit, err := d.sparseCommit(repo)
+	commit, err := d.sparseCommit(context.Background(), repo, nil)
 	if err != nil {
 		t.Fatalf("sparseCommit: %v", err)
 	}

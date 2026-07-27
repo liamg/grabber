@@ -448,8 +448,10 @@ type cloneAttempt struct {
 func (d *Downloader) cloneAttempts() []cloneAttempt {
 	switch {
 	case looksLikeCommitHash(d.ref):
-		// A commit hash needs every ref: it may not be reachable from the
-		// default branch tip, and resolving a short hash walks the whole log.
+		// A hash is not a ref name, so there is nothing to ask the server for by
+		// name. Every ref is fetched so the commit can be found locally. The
+		// partial-clone path narrows this (see sparseClone), because it can fetch
+		// the commit by hash instead.
 		return []cloneAttempt{{"", false}}
 	case d.ref == "":
 		return []cloneAttempt{{"", true}}
@@ -464,14 +466,17 @@ func (d *Downloader) cloneAttempts() []cloneAttempt {
 
 // tagMode reports which tags to fetch.
 //
-// grabber only ever hands back files: it strips .git and never runs another git
-// operation, so tags are objects that are downloaded and then thrown away. They
-// are always disabled rather than exposed as an option, because there is no
-// caller that could make use of them. In a repo with thousands of tags this is
-// the single largest saving available — measured at ~5x on a mid-sized repo.
+// grabber only ever hands back files. It strips .git and never runs another git
+// operation, so tags are objects that get downloaded and then thrown away. This
+// is not exposed as an option because no caller could make use of them, and in a
+// repository with thousands of tags it is the single largest saving available —
+// measured at ~5x on a mid-sized repo. A tag named as the ref is still fetched,
+// because it is requested explicitly.
 //
-// The exception is a commit hash, which is resolved by walking every ref: a
-// commit reachable only from a tag would otherwise become unresolvable.
+// A commit hash is the exception: the commit has to be found locally, and one
+// reachable only from a tag would be unresolvable without them. The
+// partial-clone path overrides this (see sparseClone), because it can fetch the
+// commit by hash instead.
 func (d *Downloader) tagMode() plumbing.TagMode {
 	if looksLikeCommitHash(d.ref) {
 		return plumbing.AllTags
@@ -870,7 +875,9 @@ func (d *Downloader) resolveDepth(s settings.Settings) int {
 	if s.Git.Depth > 0 {
 		return s.Git.Depth
 	}
-	// Commit hashes need full history so the commit is reachable.
+	// Commit hashes need history so the commit is reachable locally. The
+	// partial-clone path overrides this (see sparseClone), because it can fetch
+	// the commit by hash instead of searching for it.
 	if looksLikeCommitHash(d.ref) {
 		return 0
 	}
