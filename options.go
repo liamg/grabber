@@ -150,12 +150,6 @@ func WithNetrc(enabled bool) Option {
 	}
 }
 
-func WithSparseCheckout(enabled bool) Option {
-	return func(g *Grabber) {
-		g.settings.Git.SparseCheckout = enabled
-	}
-}
-
 func WithAutoExtract(enabled bool) Option {
 	return func(g *Grabber) {
 		g.settings.EnableAutoExtract = enabled

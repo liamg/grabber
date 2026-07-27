@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/plumbing/object"
 )
 
 func TestParseGitURL(t *testing.T) {
@@ -203,6 +203,7 @@ func TestResolveCommitHash(t *testing.T) {
 	if err != nil {
 		t.Fatalf("init: %v", err)
 	}
+	disableCommitSigning(t, repo)
 
 	wt, err := repo.Worktree()
 	if err != nil {

@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
+	githttp "github.com/go-git/go-git/v6/plumbing/transport/http"
 
 	"github.com/liamg/grabber/settings"
 	"github.com/liamg/grabber/ssrf"

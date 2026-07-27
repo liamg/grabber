@@ -196,9 +196,11 @@ func TestDownload_GitOverHTTP_WithSubdir(t *testing.T) {
 		t.Fatalf("download: %v", err)
 	}
 
-	assertFileContains(t, filepath.Join(dst, "nested.txt"), "nested via http\n")
-	assertFileContains(t, filepath.Join(dst, "extra.txt"), "second file\n")
-	assertFileNotExists(t, filepath.Join(dst, "file.txt"))
+	// The subdir keeps its repository-relative path. Root-level files come too:
+	// that is git's cone-mode rule, which this mirrors.
+	assertFileContains(t, filepath.Join(dst, "sub", "nested.txt"), "nested via http\n")
+	assertFileContains(t, filepath.Join(dst, "sub", "extra.txt"), "second file\n")
+	assertFileNotExists(t, filepath.Join(dst, "nested.txt"))
 }
 
 func TestDownload_GitOverHTTP_WithDepth(t *testing.T) {
