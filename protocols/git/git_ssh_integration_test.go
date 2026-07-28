@@ -307,9 +307,9 @@ rm -rf /tmp/working
 		t.Fatalf("download via ssh with subdir: %v", err)
 	}
 
-	assertFileContains(t, filepath.Join(dst, "main.tf"), "vpc main.tf\n")
-	assertFileContains(t, filepath.Join(dst, "variables.tf"), "vpc vars.tf\n")
-
-	// Root file should not be present.
-	assertFileNotExists(t, filepath.Join(dst, "root.txt"))
+	// The subdir keeps its repository-relative path. Root-level files come too:
+	// that is git's cone-mode rule, which this mirrors.
+	assertFileContains(t, filepath.Join(dst, "modules", "vpc", "main.tf"), "vpc main.tf\n")
+	assertFileContains(t, filepath.Join(dst, "modules", "vpc", "variables.tf"), "vpc vars.tf\n")
+	assertFileNotExists(t, filepath.Join(dst, "main.tf"))
 }

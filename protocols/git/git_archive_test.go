@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
+	githttp "github.com/go-git/go-git/v6/plumbing/transport/http"
 
 	"github.com/liamg/grabber/settings"
 	"github.com/liamg/grabber/ssrf"
@@ -294,13 +294,16 @@ func TestExtractArchive(t *testing.T) {
 		assertFileNotExists(t, filepath.Join(dst, "repo-abc123"))
 	})
 
-	t.Run("subdir extract strips subdir prefix", func(t *testing.T) {
+	// The subdir keeps its repository-relative path, matching the git path so the
+	// two are interchangeable. Root-level files come too, per cone mode.
+	t.Run("subdir extract keeps the repository layout", func(t *testing.T) {
 		dst := t.TempDir()
 		if err := extractArchive(gunzip(t, archive), dst, "sub"); err != nil {
 			t.Fatalf("extractArchive: %v", err)
 		}
-		assertFileContains(t, filepath.Join(dst, "inner.txt"), "inner")
-		assertFileNotExists(t, filepath.Join(dst, "file.txt"))
+		assertFileContains(t, filepath.Join(dst, "sub", "inner.txt"), "inner")
+		assertFileContains(t, filepath.Join(dst, "file.txt"), "hello")
+		assertFileNotExists(t, filepath.Join(dst, "inner.txt"))
 	})
 
 	t.Run("missing subdir errors", func(t *testing.T) {
@@ -403,14 +406,17 @@ func TestDownload_ArchiveFallback(t *testing.T) {
 		assertFileNotExists(t, filepath.Join(dst, ".git"))
 	})
 
+	// An orphaned commit plus a subdir is the Aer Lingus case: the archive
+	// fallback has to land files where the git path would, or the caller cannot
+	// find the requested directory.
 	t.Run("with subdir", func(t *testing.T) {
 		dst := t.TempDir()
 		d := &Downloader{repoURL: bareRepo, ref: orphanHash, subdir: "sub"}
 		if _, err := d.Download(context.Background(), dst, settings.Settings{SSRFLevel: ssrf.None}); err != nil {
 			t.Fatalf("download: %v", err)
 		}
-		assertFileContains(t, filepath.Join(dst, "inner.txt"), "inner-from-archive")
-		assertFileNotExists(t, filepath.Join(dst, "file.txt"))
+		assertFileContains(t, filepath.Join(dst, "sub", "inner.txt"), "inner-from-archive")
+		assertFileNotExists(t, filepath.Join(dst, "inner.txt"))
 	})
 }
 

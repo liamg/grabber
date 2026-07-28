@@ -8,7 +8,7 @@ Grabber is an alternative to [go-getter](https://github.com/hashicorp/go-getter)
 
 | | grabber | go-getter |
 |---|---|---|
-| Sparse checkout | ✅ | ❌ |
+| Partial clone (fetch only the subdirectory you need) | ✅ | ❌ |
 | Programmatic credential injection | ✅ | ❌ (env vars / URL params only) |
 | HTTPS credential matching | ✅ (git-style host/path matching) | ❌ |
 | Git credential helper support | ✅ (via system `git`) | ✅ (shells out to `git`) |
@@ -22,7 +22,7 @@ Grabber is an alternative to [go-getter](https://github.com/hashicorp/go-getter)
 ## Features
 
 - Download files and directories from Git, Mercurial, S3, GCS, OCI, HTTP, and local filesystems
-- **Sparse checkout** — only fetch the subdirectory you need from a Git repo
+- **Minimal downloads** — one commit, one branch, no tags, and only the objects backing the subdirectory you asked for
 - **Programmatic credential injection** — pass SSH keys, AWS credentials, GCP service account keys, OCI registry credentials, and HTTPS credentials via the Go API
 - **HTTPS credential matching** — configure HTTPS credentials with git-style host/path matching, used automatically for Git and HTTP protocols
 - **SSH-to-HTTPS auto-transform** — automatically convert SSH/SCP Git URLs to HTTPS (useful in CI environments without SSH key access)
@@ -69,11 +69,40 @@ Protocols are auto-detected from the URL.
 **Query parameters:**
 - `ref` - branch, tag, or commit SHA to check out
 - `depth` - shallow clone depth (e.g. `?depth=1`)
+- `subdir` - subdirectory to fetch, keeping the repository layout (see below)
 
 **Subdirectory support:**
-Use `//` to specify a subdirectory: `github.com/user/repo//modules/vpc?ref=v1.0.0`
 
-When sparse checkout is enabled, only the specified subdirectory is checked out. Otherwise the full repo is cloned and the subdirectory is extracted.
+Two interchangeable spellings, both meaning "fetch only this directory":
+
+| Form | Example |
+|------|---------|
+| `//subdir` | `github.com/user/repo//modules/vpc` |
+| `?subdir=` | `github.com/user/repo?subdir=modules/vpc` |
+
+Either way the repository layout is preserved, so the contents land at `<dest>/modules/vpc`. Keeping the layout is what lets several subdirectories of one repository be merged into a single destination tree. If both forms are given, `//` wins.
+
+**Minimal downloads:**
+
+grabber returns files, not a usable repository — it strips `.git` and never runs another git operation. So it always fetches the least it can, with no option to turn this off:
+
+- A single commit (`depth 1`), only the branch needed, and no tags. On a mid-sized repo this alone is ~5x less data than a default clone.
+- When a subdirectory is requested, only the objects backing that directory. Fetching `internal/service/s3` out of `terraform-provider-aws` transfers ~4 MiB instead of ~236 MiB.
+
+The exception is a **commit hash** ref, which keeps full history, all branches and all tags: the commit may not be reachable from the default branch tip, and resolving a short hash walks every ref.
+
+Subdirectory selection follows git's cone-mode rules, matching what `git sparse-checkout set <subdir>` leaves in a working tree:
+
+- The requested directory in full, recursively.
+- Plus the files sitting directly in each directory along the path to it, starting at the repository root. So `modules/vpc` also brings any files directly in `modules/` and at the root.
+- Directories off that path are excluded entirely.
+- With no subdirectory there is nothing to narrow to, so the whole repository is cloned. Every blob is needed anyway, and filtering them only to request them all back would cost an extra round trip for the same bytes.
+
+A directory selected this way may contain references to paths outside it (e.g. a Terraform module with `source = "../shared"`). Those are not downloaded — request them as a second fetch into the same destination, which the preserved layout makes safe.
+
+Narrowing to a subdirectory needs a remote that supports partial clone (`--filter=blob:none`) and can serve objects by hash — the same requirement the `git` binary's lazy fetch has. GitHub and GitLab both qualify. When a remote cannot (including local `file://` remotes), grabber transparently falls back to a full clone, so the result is always correct and only the transfer size changes.
+
+It is also skipped when `WithGitRecurseSubmodules(true)` is set, since submodules need a real working tree.
 
 **Scheme fallback:**
 A clone is first attempted with the URL as given. On failure grabber falls back to the other scheme: an SSH/SCP URL falls back to its HTTPS equivalent, and an HTTPS/HTTP URL falls back to SSH when an SSH key is configured for the host (Azure DevOps SSH URLs are handled specially). `WithGitSSHToHTTPS()` forces the HTTPS form up front instead. Setting `WithConnectProbeTimeout(d)` makes an unreachable primary fail fast so the fallback is tried promptly rather than after a clone timeout.
@@ -195,7 +224,6 @@ g := grabber.New(
 
 | Option | Description |
 |--------|-------------|
-| `WithSparseCheckout(bool)` | Enable sparse checkout for Git subdirectories (default: `false`) |
 | `WithAutoExtract(bool)` | Enable automatic archive extraction (default: `true`) |
 | `WithGitSSHKey([]byte)` | Default SSH private key for Git authentication |
 | `WithGitSSHKeyForHost(host, []byte)` | SSH private key scoped to a specific host (takes precedence over the default) |

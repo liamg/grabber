@@ -171,7 +171,6 @@ type GitConfig struct {
 	SSHKeys                   []SSHCredential // SSH private keys matched by host
 	KnownHosts                []byte          // known_hosts data for in-memory SSH host-key verification
 	Depth                     int             // 0 = full clone
-	SparseCheckout            bool            // only fetch the subdirectory specified via // syntax
 	InsecureSkipHostKeyVerify bool            // skip SSH host key verification
 	SSHToHTTPS                bool            // convert SSH/SCP Git URLs to HTTPS before cloning
 	RecurseSubmodules         bool            // recursively clone submodules (like git clone --recursive)

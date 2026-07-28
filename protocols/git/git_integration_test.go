@@ -7,11 +7,31 @@ import (
 	"testing"
 	"time"
 
-	gogit "github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing/object"
+	gogit "github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/config"
+	"github.com/go-git/go-git/v6/plumbing/object"
 
 	"github.com/liamg/grabber/settings"
 )
+
+// disableCommitSigning pins commit.gpgSign off in the repo's own config.
+//
+// go-git resolves signing from the merged system/global/local config, so a
+// developer (or CI image) with commit.gpgSign enabled in ~/.gitconfig would
+// otherwise make these fixtures fail when they build throwaway commits. Grabber
+// only ever clones and reads, so no code path under test signs anything.
+func disableCommitSigning(t *testing.T, repo *gogit.Repository) {
+	t.Helper()
+
+	cfg, err := repo.Config()
+	if err != nil {
+		t.Fatalf("read repo config: %v", err)
+	}
+	cfg.Commit.GpgSign = config.NewOptBool(false)
+	if err := repo.SetConfig(cfg); err != nil {
+		t.Fatalf("write repo config: %v", err)
+	}
+}
 
 // createBareRepo creates a bare repo with some test files and returns its path.
 // The repo will have:
@@ -29,6 +49,7 @@ func createBareRepo(t *testing.T) string {
 	if err != nil {
 		t.Fatalf("init repo: %v", err)
 	}
+	disableCommitSigning(t, repo)
 
 	wt, err := repo.Worktree()
 	if err != nil {
@@ -77,8 +98,9 @@ func createBareRepo(t *testing.T) string {
 
 	// Clone as bare repo.
 	bareDir := t.TempDir()
-	_, err = gogit.PlainClone(bareDir, true, &gogit.CloneOptions{
-		URL: workDir,
+	_, err = gogit.PlainClone(bareDir, &gogit.CloneOptions{
+		Bare: true,
+		URL:  workDir,
 	})
 	if err != nil {
 		t.Fatalf("bare clone: %v", err)
@@ -141,6 +163,7 @@ func TestDownload_WithRef_CommitHash(t *testing.T) {
 	if err != nil {
 		t.Fatalf("init: %v", err)
 	}
+	disableCommitSigning(t, repo)
 
 	wt, err := repo.Worktree()
 	if err != nil {
@@ -161,7 +184,7 @@ func TestDownload_WithRef_CommitHash(t *testing.T) {
 
 	// Clone as bare.
 	bareDir := t.TempDir()
-	gogit.PlainClone(bareDir, true, &gogit.CloneOptions{URL: workDir})
+	gogit.PlainClone(bareDir, &gogit.CloneOptions{Bare: true, URL: workDir})
 
 	dst := t.TempDir()
 	d := &Downloader{repoURL: bareDir, ref: hash1.String()}
@@ -180,6 +203,7 @@ func TestDownload_WithRef_ShortCommitHash(t *testing.T) {
 	if err != nil {
 		t.Fatalf("init: %v", err)
 	}
+	disableCommitSigning(t, repo)
 
 	wt, err := repo.Worktree()
 	if err != nil {
@@ -200,7 +224,7 @@ func TestDownload_WithRef_ShortCommitHash(t *testing.T) {
 
 	// Clone as bare.
 	bareDir := t.TempDir()
-	gogit.PlainClone(bareDir, true, &gogit.CloneOptions{URL: workDir})
+	gogit.PlainClone(bareDir, &gogit.CloneOptions{Bare: true, URL: workDir})
 
 	// Use a 7-char short hash.
 	shortHash := hash1.String()[:7]
@@ -222,6 +246,7 @@ func TestDownload_WithRef_ShortCommitHash_AndSubdir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("init: %v", err)
 	}
+	disableCommitSigning(t, repo)
 
 	wt, err := repo.Worktree()
 	if err != nil {
@@ -244,7 +269,7 @@ func TestDownload_WithRef_ShortCommitHash_AndSubdir(t *testing.T) {
 	wt.Commit("second", &gogit.CommitOptions{Author: sig})
 
 	bareDir := t.TempDir()
-	gogit.PlainClone(bareDir, true, &gogit.CloneOptions{URL: workDir})
+	gogit.PlainClone(bareDir, &gogit.CloneOptions{Bare: true, URL: workDir})
 
 	shortHash := hash1.String()[:8]
 
@@ -255,10 +280,8 @@ func TestDownload_WithRef_ShortCommitHash_AndSubdir(t *testing.T) {
 		t.Fatalf("download with short hash + subdir: %v", err)
 	}
 
-	// Should have v1 content (from the first commit).
-	assertFileContains(t, filepath.Join(dst, "inner.txt"), "inner-v1")
-	// root.txt should NOT be present (subdir extraction).
-	assertFileNotExists(t, filepath.Join(dst, "root.txt"))
+	// Should have v1 content (from the first commit), at its repo-relative path.
+	assertFileContains(t, filepath.Join(dst, "sub", "inner.txt"), "inner-v1")
 }
 
 func TestDownload_WithSubdir(t *testing.T) {
@@ -271,12 +294,10 @@ func TestDownload_WithSubdir(t *testing.T) {
 		t.Fatalf("download: %v", err)
 	}
 
-	// Should only contain contents of "sub" directory.
-	assertFileContains(t, filepath.Join(dst, "nested.txt"), "nested content")
-	assertFileContains(t, filepath.Join(dst, "extra.txt"), "extra content")
-
-	// Root file.txt should not be present.
-	assertFileNotExists(t, filepath.Join(dst, "file.txt"))
+	// The subdir keeps its repository-relative path.
+	assertFileContains(t, filepath.Join(dst, "sub", "nested.txt"), "nested content")
+	assertFileContains(t, filepath.Join(dst, "sub", "extra.txt"), "extra content")
+	assertFileNotExists(t, filepath.Join(dst, "nested.txt"))
 }
 
 func TestDownload_WithSubdirAndRef(t *testing.T) {
@@ -290,8 +311,8 @@ func TestDownload_WithSubdirAndRef(t *testing.T) {
 	}
 
 	// v1.0.0 only has nested.txt in sub/, not extra.txt.
-	assertFileContains(t, filepath.Join(dst, "nested.txt"), "nested content")
-	assertFileNotExists(t, filepath.Join(dst, "extra.txt"))
+	assertFileContains(t, filepath.Join(dst, "sub", "nested.txt"), "nested content")
+	assertFileNotExists(t, filepath.Join(dst, "sub", "extra.txt"))
 }
 
 func TestDownload_WithDepth(t *testing.T) {
@@ -342,16 +363,40 @@ func TestDownload_URLDepthOverridesSettings(t *testing.T) {
 	assertFileContains(t, filepath.Join(dst, "file.txt"), "hello")
 }
 
-func TestDownload_SparseCheckoutError(t *testing.T) {
+// TestDownload_PartialCloneFallsBackToFullClone covers a remote that cannot
+// serve a partial clone (a local repo, which advertises no filter support).
+// The download must still succeed by falling back to a full clone, for every
+// subdir spelling — including no subdir at all.
+func TestDownload_PartialCloneFallsBackToFullClone(t *testing.T) {
 	bareRepo := createBareRepo(t)
-	dst := t.TempDir()
+	// Partial clones are always attempted; there is no option to enable.
+	s := settings.Settings{}
 
-	d := &Downloader{repoURL: bareRepo}
-	s := settings.Settings{Git: settings.GitConfig{SparseCheckout: true}}
-	_, err := d.Download(context.Background(), dst, s)
-	if err == nil {
-		t.Fatal("expected error for sparse checkout without subdir")
-	}
+	// With no subdir there is nothing to narrow to, so this is an ordinary full
+	// clone (matching go-getter, which gated every sparse flag on a subdir).
+	// It must no longer be an error, and must not silently drop subdirectories.
+	t.Run("no subdir clones the whole repo", func(t *testing.T) {
+		dst := t.TempDir()
+		d := &Downloader{repoURL: bareRepo}
+		if _, err := d.Download(context.Background(), dst, s); err != nil {
+			t.Fatalf("download: %v", err)
+		}
+		assertFileContains(t, filepath.Join(dst, "file.txt"), "hello")
+		assertFileContains(t, filepath.Join(dst, "sub", "nested.txt"), "nested content")
+		assertFileContains(t, filepath.Join(dst, "sub", "extra.txt"), "extra content")
+	})
+
+	// A subdir keeps its repository-relative path, whichever spelling asked for
+	// it, so several subdirs of one repo can be merged into a single tree.
+	t.Run("subdir keeps its repository-relative path", func(t *testing.T) {
+		dst := t.TempDir()
+		d := &Downloader{repoURL: bareRepo, subdir: "sub"}
+		if _, err := d.Download(context.Background(), dst, s); err != nil {
+			t.Fatalf("download: %v", err)
+		}
+		assertFileContains(t, filepath.Join(dst, "sub", "nested.txt"), "nested content")
+		assertFileNotExists(t, filepath.Join(dst, "nested.txt"))
+	})
 }
 
 func TestDownload_NonexistentRef(t *testing.T) {

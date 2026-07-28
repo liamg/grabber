@@ -150,12 +150,6 @@ func WithNetrc(enabled bool) Option {
 	}
 }
 
-func WithSparseCheckout(enabled bool) Option {
-	return func(g *Grabber) {
-		g.settings.Git.SparseCheckout = enabled
-	}
-}
-
 // WithTemporaryDirectory sets the parent directory grabber stages downloads
 // under (a "grabber/<uuid>" working directory is created within it per fetch).
 // Use it to keep downloads on a specific volume rather than the system temp
