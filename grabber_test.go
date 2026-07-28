@@ -184,9 +184,28 @@ func TestGrab_ForcePrefix(t *testing.T) {
 
 func TestGrab_ForcePrefix_WrongProtocol(t *testing.T) {
 	g := New()
-	err := g.Grab(context.Background(), "s3::https://example.com/file.txt", t.TempDir())
+	// A forced s3:: URL that S3 cannot handle (no bucket) must error at
+	// detection rather than fall through to another protocol. A non-amazonaws
+	// host is now accepted as a custom endpoint under s3::, so the failure has
+	// to come from an unparseable S3 URL, not merely a non-AWS host.
+	err := g.Grab(context.Background(), "s3::https://example.com/", t.TempDir())
 	if err == nil {
-		t.Fatal("expected error for s3:: prefix with non-S3 URL")
+		t.Fatal("expected error for s3:: prefix with unparseable S3 URL")
+	}
+}
+
+func TestWithTemporaryDirectory(t *testing.T) {
+	dir := t.TempDir()
+	g := New(WithTemporaryDirectory(dir))
+	if g.settings.TemporaryDirectory != dir {
+		t.Errorf("expected TemporaryDirectory=%q, got %q", dir, g.settings.TemporaryDirectory)
+	}
+
+	// An empty value leaves the default untouched rather than blanking it.
+	def := New().settings.TemporaryDirectory
+	g = New(WithTemporaryDirectory(""))
+	if g.settings.TemporaryDirectory != def {
+		t.Errorf("expected empty override to keep default %q, got %q", def, g.settings.TemporaryDirectory)
 	}
 }
 

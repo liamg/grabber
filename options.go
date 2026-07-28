@@ -156,6 +156,19 @@ func WithSparseCheckout(enabled bool) Option {
 	}
 }
 
+// WithTemporaryDirectory sets the parent directory grabber stages downloads
+// under (a "grabber/<uuid>" working directory is created within it per fetch).
+// Use it to keep downloads on a specific volume rather than the system temp
+// directory, e.g. when os.TempDir() is small or on a different filesystem than
+// the final destination. An empty string leaves the default (os.TempDir()).
+func WithTemporaryDirectory(dir string) Option {
+	return func(g *Grabber) {
+		if dir != "" {
+			g.settings.TemporaryDirectory = dir
+		}
+	}
+}
+
 func WithAutoExtract(enabled bool) Option {
 	return func(g *Grabber) {
 		g.settings.EnableAutoExtract = enabled
