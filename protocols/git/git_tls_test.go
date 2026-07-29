@@ -85,6 +85,7 @@ func TestHTTPTransportFor(t *testing.T) {
 		}
 		if tr == nil {
 			t.Fatal("expected a transport for a configured https remote")
+			return // unreachable; staticcheck does not model t.Fatal as terminating
 		}
 		if tr.TLSClientConfig == nil || tr.TLSClientConfig.RootCAs == nil {
 			t.Error("expected the configured CA bundle to be applied")
@@ -164,6 +165,7 @@ func pemBlock(t *testing.T, certPEM []byte) []byte {
 	block, _ := pem.Decode(certPEM)
 	if block == nil {
 		t.Fatal("no PEM block found in certificate")
+		return nil // unreachable; staticcheck does not model t.Fatal as terminating
 	}
 	return block.Bytes
 }
