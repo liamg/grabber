@@ -196,6 +196,117 @@ func TestLooksLikeCommitHash(t *testing.T) {
 	}
 }
 
+func TestCloneAttemptRefNames(t *testing.T) {
+	tests := []struct {
+		name string
+		ref  string
+		want []string
+	}{
+		{
+			// A bare name could be either, so both namespaces are tried.
+			name: "bare name tries branch then tag",
+			ref:  "v1.0.0",
+			want: []string{"refs/heads/v1.0.0", "refs/tags/v1.0.0"},
+		},
+		{
+			// The cloudposse convention. Prefixing this would ask for
+			// refs/tags/tags/0.19.2, which cannot resolve.
+			name: "tags/ is expanded, not prefixed",
+			ref:  "tags/0.19.2",
+			want: []string{"refs/tags/0.19.2"},
+		},
+		{
+			name: "heads/ is expanded, not prefixed",
+			ref:  "heads/main",
+			want: []string{"refs/heads/main"},
+		},
+		{
+			name: "fully qualified ref is used as-is",
+			ref:  "refs/tags/v1.0.0",
+			want: []string{"refs/tags/v1.0.0"},
+		},
+		{
+			name: "fully qualified ref in another namespace is used as-is",
+			ref:  "refs/pull/123/head",
+			want: []string{"refs/pull/123/head"},
+		},
+		{
+			// A slash is usually just a branch, so heads/ is still tried first.
+			name: "slashed branch name still resolves as a branch",
+			ref:  "feature/foo",
+			want: []string{"refs/heads/feature/foo", "refs/tags/feature/foo", "refs/feature/foo"},
+		},
+		{
+			// git resolves <name> via refs/<name> before the heads and tags
+			// namespaces, which is what reaches notes, remotes and pull refs.
+			name: "other namespaces fall back to refs/<name>",
+			ref:  "notes/commits",
+			want: []string{"refs/heads/notes/commits", "refs/tags/notes/commits", "refs/notes/commits"},
+		},
+		{
+			name: "no ref clones the default branch",
+			ref:  "",
+			want: []string{""},
+		},
+		{
+			name: "commit hash is not a ref name",
+			ref:  "da39a3ee5e6b4b0d3255bfef95601890afd80709",
+			want: []string{""},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := &Downloader{ref: tt.ref}
+			attempts := d.cloneAttempts()
+
+			got := make([]string, 0, len(attempts))
+			for _, a := range attempts {
+				got = append(got, a.refName.String())
+			}
+
+			if len(got) != len(tt.want) {
+				t.Fatalf("cloneAttempts() = %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("attempt %d = %q, want %q", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestQualifiedRefName(t *testing.T) {
+	tests := []struct {
+		ref    string
+		want   string
+		wantOK bool
+	}{
+		{"refs/tags/v1.0.0", "refs/tags/v1.0.0", true},
+		{"refs/heads/main", "refs/heads/main", true},
+		{"refs/pull/7/head", "refs/pull/7/head", true},
+		{"tags/0.19.2", "refs/tags/0.19.2", true},
+		{"heads/main", "refs/heads/main", true},
+		{"v1.0.0", "", false},
+		{"main", "", false},
+		{"feature/foo", "", false},
+		{"", "", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.ref, func(t *testing.T) {
+			got, ok := qualifiedRefName(tt.ref)
+			if ok != tt.wantOK {
+				t.Fatalf("qualifiedRefName(%q) ok = %v, want %v", tt.ref, ok, tt.wantOK)
+			}
+			if got.String() != tt.want {
+				t.Errorf("qualifiedRefName(%q) = %q, want %q", tt.ref, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestResolveCommitHash(t *testing.T) {
 	// Create a repo with two commits.
 	workDir := t.TempDir()
