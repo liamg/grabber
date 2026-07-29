@@ -10,6 +10,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/liamg/grabber/internal/netrc"
@@ -65,13 +66,65 @@ func parseHTTPURL(rawURL string) (*Downloader, error) {
 		return nil, errors.New("no host specified")
 	}
 
+	// "?archive=<format>" names the archive format explicitly. It is a directive
+	// to the getter rather than something the server understands, so it is
+	// stripped from the request URL.
+	archive := ""
+	if q := u.Query(); q.Has("archive") {
+		archive = q.Get("archive")
+		q.Del("archive")
+		u.RawQuery = q.Encode()
+	}
+
 	return &Downloader{
-		url: u.String(),
+		url:     u.String(),
+		archive: archive,
 	}, nil
 }
 
 type Downloader struct {
 	url string
+	// archive is the value of the "?archive=" parameter, empty when absent. See
+	// fileName for how it is applied.
+	archive string
+}
+
+// maxFileName is the longest single path component POSIX filesystems accept.
+const maxFileName = 255
+
+// fileName returns the name to write the response body to.
+//
+// Extraction happens after the download and selects an extractor from the
+// file's extension, so the name is what decides whether an archive is unpacked.
+//
+// The URL path is the usual source, but it cannot always supply one: a Terraform
+// Cloud registry download is served from an "archivist" URL whose last path
+// segment is a ~400 character opaque token with no extension — too long to
+// create, and no use to the extractor even if it were. Such URLs carry the
+// format in "?archive=" instead, which is what this prefers.
+func (d *Downloader) fileName() string {
+	if d.archive != "" {
+		// A boolean disables extraction rather than naming a format, matching
+		// the convention the parameter comes from.
+		if _, err := strconv.ParseBool(d.archive); err == nil {
+			return "download"
+		}
+		return "archive." + d.archive
+	}
+
+	u, err := url.Parse(d.url)
+	if err != nil {
+		return "download"
+	}
+	name := path.Base(u.Path)
+	if name == "" || name == "." || name == "/" {
+		return "download"
+	}
+	if len(name) > maxFileName {
+		// Keep the tail: any extension lives there, and the extractor needs it.
+		return name[len(name)-maxFileName:]
+	}
+	return name
 }
 
 var _ protocols.Downloadable = (*Downloader)(nil)
@@ -134,14 +187,7 @@ func (d *Downloader) Download(ctx context.Context, tmpDir string, s settings.Set
 		return false, fmt.Errorf("downloading %s: HTTP %d", d.url, resp.StatusCode)
 	}
 
-	// Determine the filename from the URL path.
-	u, _ := url.Parse(d.url)
-	filename := path.Base(u.Path)
-	if filename == "" || filename == "." || filename == "/" {
-		filename = "download"
-	}
-
-	dst := filepath.Join(tmpDir, filename)
+	dst := filepath.Join(tmpDir, d.fileName())
 
 	f, err := os.Create(dst)
 	if err != nil {

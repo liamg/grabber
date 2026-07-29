@@ -81,6 +81,162 @@ func TestParseHTTPURL(t *testing.T) {
 	}
 }
 
+func TestParseHTTPURL_StripsArchiveParam(t *testing.T) {
+	tests := []struct {
+		name        string
+		url         string
+		wantURL     string
+		wantArchive string
+	}{
+		{
+			// The parameter directs the getter; the server knows nothing of it.
+			name:        "archive is removed from the request URL",
+			url:         "https://example.com/v1/object/abc?archive=tgz",
+			wantURL:     "https://example.com/v1/object/abc",
+			wantArchive: "tgz",
+		},
+		{
+			name:        "other parameters survive",
+			url:         "https://example.com/f?archive=zip&token=xyz",
+			wantURL:     "https://example.com/f?token=xyz",
+			wantArchive: "zip",
+		},
+		{
+			name:        "absent leaves the URL untouched",
+			url:         "https://example.com/file.tar.gz",
+			wantURL:     "https://example.com/file.tar.gz",
+			wantArchive: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d, err := parseHTTPURL(tt.url)
+			if err != nil {
+				t.Fatalf("parseHTTPURL(%q) unexpected error: %v", tt.url, err)
+			}
+			if d.url != tt.wantURL {
+				t.Errorf("url = %q, want %q", d.url, tt.wantURL)
+			}
+			if d.archive != tt.wantArchive {
+				t.Errorf("archive = %q, want %q", d.archive, tt.wantArchive)
+			}
+		})
+	}
+}
+
+func TestFileName(t *testing.T) {
+	longSegment := strings.Repeat("A", 400)
+
+	tests := []struct {
+		name    string
+		dl      *Downloader
+		want    string
+		wantLen int
+	}{
+		{
+			name: "URL path supplies the name",
+			dl:   &Downloader{url: "https://example.com/path/module.tar.gz"},
+			want: "module.tar.gz",
+		},
+		{
+			name: "no path falls back",
+			dl:   &Downloader{url: "https://example.com"},
+			want: "download",
+		},
+		{
+			// A Terraform Cloud registry download: opaque token, no extension.
+			name:    "archive parameter names the format",
+			dl:      &Downloader{url: "https://archivist.terraform.io/v1/object/" + longSegment, archive: "tgz"},
+			want:    "archive.tgz",
+			wantLen: len("archive.tgz"),
+		},
+		{
+			name: "archive parameter wins over the path",
+			dl:   &Downloader{url: "https://example.com/thing.zip", archive: "tar.gz"},
+			want: "archive.tar.gz",
+		},
+		{
+			// A boolean disables extraction rather than naming a format.
+			name: "archive=false does not become an extension",
+			dl:   &Downloader{url: "https://example.com/thing", archive: "false"},
+			want: "download",
+		},
+		{
+			name: "archive=true does not become an extension",
+			dl:   &Downloader{url: "https://example.com/thing", archive: "true"},
+			want: "download",
+		},
+		{
+			// Must be creatable: NAME_MAX is 255 on the filesystems we target.
+			name:    "overlong path segment is clamped",
+			dl:      &Downloader{url: "https://example.com/v1/object/" + longSegment},
+			wantLen: maxFileName,
+		},
+		{
+			name:    "clamping keeps the extension, which selects the extractor",
+			dl:      &Downloader{url: "https://example.com/" + longSegment + ".tar.gz"},
+			wantLen: maxFileName,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.dl.fileName()
+
+			if tt.want != "" && got != tt.want {
+				t.Errorf("fileName() = %q, want %q", got, tt.want)
+			}
+			if tt.wantLen != 0 && len(got) != tt.wantLen {
+				t.Errorf("len(fileName()) = %d, want %d", len(got), tt.wantLen)
+			}
+			if len(got) > maxFileName {
+				t.Errorf("fileName() is %d bytes, exceeds NAME_MAX %d", len(got), maxFileName)
+			}
+		})
+	}
+
+	t.Run("clamped name still ends in the archive extension", func(t *testing.T) {
+		d := &Downloader{url: "https://example.com/" + longSegment + ".tar.gz"}
+		if got := d.fileName(); !strings.HasSuffix(got, ".tar.gz") {
+			t.Errorf("fileName() = %q, want a .tar.gz suffix", got)
+		}
+	})
+}
+
+func TestDownload_ArchiveParamNamesTheFile(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Has("archive") {
+			t.Errorf("archive parameter reached the server: %s", r.URL.RawQuery)
+		}
+		_, _ = w.Write([]byte("payload"))
+	}))
+	defer srv.Close()
+
+	// Mirrors a Terraform Cloud archivist URL: a long opaque segment, no
+	// extension, format carried in the query.
+	d, err := parseHTTPURL(srv.URL + "/v1/object/" + strings.Repeat("A", 400) + "?archive=tgz")
+	if err != nil {
+		t.Fatalf("parseHTTPURL() error: %v", err)
+	}
+
+	tmpDir := t.TempDir()
+	if _, err := d.Download(context.Background(), tmpDir, withoutSSRF(settings.Defaults)); err != nil {
+		t.Fatalf("Download() error: %v", err)
+	}
+
+	entries, err := os.ReadDir(tmpDir)
+	if err != nil {
+		t.Fatalf("ReadDir() error: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 file, found %d", len(entries))
+	}
+	if entries[0].Name() != "archive.tgz" {
+		t.Errorf("wrote %q, want %q", entries[0].Name(), "archive.tgz")
+	}
+}
+
 func TestDownload(t *testing.T) {
 	content := "hello world"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
