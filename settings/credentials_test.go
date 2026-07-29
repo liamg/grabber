@@ -48,3 +48,51 @@ func TestRequestCredential(t *testing.T) {
 		}
 	})
 }
+
+func TestMatchHTTPSCredential_PrefersURLUsername(t *testing.T) {
+	s := Settings{
+		HTTPSCredentials: []HTTPSCredential{
+			{Host: "dev.azure.com", Username: "other", Password: "other-pass"},
+			{Host: "dev.azure.com", Username: "acme", Password: "acme-pass"},
+		},
+	}
+
+	t.Run("named account wins", func(t *testing.T) {
+		got := s.MatchHTTPSCredential("https://acme@dev.azure.com/acme/DevOps/_git/x")
+		if got == nil || got.Password != "acme-pass" {
+			t.Fatalf("got %#v, want the credential for the named account", got)
+		}
+	})
+
+	t.Run("no username in URL keeps existing behaviour", func(t *testing.T) {
+		// Host-only credentials do not rank against each other, so the last one
+		// configured wins. The username preference does not disturb that.
+		got := s.MatchHTTPSCredential("https://dev.azure.com/acme/DevOps/_git/x")
+		if got == nil || got.Password != "acme-pass" {
+			t.Fatalf("got %#v, want the last host-only match", got)
+		}
+	})
+
+	t.Run("unmatched username still falls back to the host credential", func(t *testing.T) {
+		// The configured account often differs from the URL's — a PAT stored
+		// under x-access-token, say. A non-match must not mean no credential.
+		one := Settings{HTTPSCredentials: []HTTPSCredential{
+			{Host: "dev.azure.com", Username: "x-access-token", Password: "pat"},
+		}}
+		got := one.MatchHTTPSCredential("https://acme@dev.azure.com/acme/DevOps/_git/x")
+		if got == nil || got.Password != "pat" {
+			t.Fatalf("got %#v, want the host credential", got)
+		}
+	})
+
+	t.Run("path specificity still applies within the named account", func(t *testing.T) {
+		s := Settings{HTTPSCredentials: []HTTPSCredential{
+			{Host: "h", Username: "u", Password: "broad"},
+			{Host: "h", Username: "u", Password: "narrow", Path: "/org/repo"},
+		}}
+		got := s.MatchHTTPSCredential("https://u@h/org/repo/sub")
+		if got == nil || got.Password != "narrow" {
+			t.Fatalf("got %#v, want the longest path prefix", got)
+		}
+	})
+}

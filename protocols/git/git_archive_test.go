@@ -406,9 +406,9 @@ func TestDownload_ArchiveFallback(t *testing.T) {
 		assertFileNotExists(t, filepath.Join(dst, ".git"))
 	})
 
-	// An orphaned commit plus a subdir is the Aer Lingus case: the archive
-	// fallback has to land files where the git path would, or the caller cannot
-	// find the requested directory.
+	// An orphaned commit plus a subdir: the archive fallback has to land files
+	// where the git path would, or the caller cannot find the requested
+	// directory.
 	t.Run("with subdir", func(t *testing.T) {
 		dst := t.TempDir()
 		d := &Downloader{repoURL: bareRepo, ref: orphanHash, subdir: "sub"}

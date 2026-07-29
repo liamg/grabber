@@ -589,14 +589,24 @@ func (d *Downloader) resolveAuth(ctx context.Context, s settings.Settings) (any,
 		return auth, nil
 	}
 
-	// For HTTPS, check for embedded credentials in the URL.
+	// For HTTPS, a complete credential embedded in the URL wins.
 	u, err := url.Parse(d.repoURL)
+	urlUser := ""
 	if err == nil && u.User != nil {
-		password, _ := u.User.Password()
-		return &http.BasicAuth{
-			Username: u.User.Username(),
-			Password: password,
-		}, nil
+		if password, ok := u.User.Password(); ok {
+			return &http.BasicAuth{
+				Username: u.User.Username(),
+				Password: password,
+			}, nil
+		}
+		// A username with no password is not a credential. It names the account
+		// to authenticate as — "git::https://org@dev.azure.com/..." is a common
+		// way to pin that without committing a secret — and the password has to
+		// come from somewhere else. Treating it as complete sends an empty
+		// password and earns a 401, with the configured credentials below never
+		// consulted. git resolves it the same way: the username is passed to the
+		// credential helpers as a hint, not used on its own.
+		urlUser = u.User.Username()
 	}
 
 	// Check configured HTTPS credentials.
@@ -617,9 +627,16 @@ func (d *Downloader) resolveAuth(ctx context.Context, s settings.Settings) (any,
 	// Try the system git credential helper (e.g. osxkeychain, manager-core).
 	// This is a system fallback and is skipped when disabled.
 	if !s.NoSystemFallback && u != nil && (u.Scheme == "https" || u.Scheme == "http") {
-		if auth := credentialFillFunc(ctx, u.Scheme, u.Hostname()); auth != nil {
+		if auth := credentialFillFunc(ctx, u.Scheme, u.Hostname(), urlUser); auth != nil {
 			return auth, nil
 		}
+	}
+
+	// Nothing supplied a password. Offer the URL's username alone, which some
+	// hosts accept as a whole credential — a personal access token in the
+	// username position, for instance.
+	if urlUser != "" {
+		return &http.BasicAuth{Username: urlUser}, nil
 	}
 
 	return nil, nil
@@ -771,21 +788,34 @@ func normalizeKnownHost(h string) string {
 // gitCredentialFill shells out to "git credential fill" to resolve credentials
 // from the user's configured credential helpers. Returns nil if git is not
 // installed or no credentials are found.
-func gitCredentialFill(ctx context.Context, protocol, host string) *http.BasicAuth {
+func gitCredentialFill(ctx context.Context, protocol, host, username string) *http.BasicAuth {
 	gitBin, err := exec.LookPath("git")
 	if err != nil {
 		return nil
 	}
 
+	// A known username narrows the lookup to that account, which is what git
+	// does with a username in the URL. Without it a helper holding credentials
+	// for several accounts on one host can hand back the wrong one.
+	query := fmt.Sprintf("protocol=%s\nhost=%s\n", protocol, host)
+	if username != "" {
+		query += fmt.Sprintf("username=%s\n", username)
+	}
+
 	cmd := exec.CommandContext(ctx, gitBin, "credential", "fill")
-	cmd.Stdin = strings.NewReader(fmt.Sprintf("protocol=%s\nhost=%s\n\n", protocol, host))
+	cmd.Stdin = strings.NewReader(query + "\n")
+	// Configured helpers (keychain, manager-core, ...) are still consulted; what
+	// this suppresses is git falling back to asking a human. A library call must
+	// not be able to block on a terminal, and in a runner there is no terminal to
+	// answer it.
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
 
 	out, err := cmd.Output()
 	if err != nil {
 		return nil
 	}
 
-	var username, password string
+	var gotUser, gotPass string
 	for _, line := range strings.Split(string(out), "\n") {
 		key, value, ok := strings.Cut(line, "=")
 		if !ok {
@@ -793,19 +823,19 @@ func gitCredentialFill(ctx context.Context, protocol, host string) *http.BasicAu
 		}
 		switch key {
 		case "username":
-			username = value
+			gotUser = value
 		case "password":
-			password = value
+			gotPass = value
 		}
 	}
 
-	if username == "" && password == "" {
+	if gotUser == "" && gotPass == "" {
 		return nil
 	}
 
 	return &http.BasicAuth{
-		Username: username,
-		Password: password,
+		Username: gotUser,
+		Password: gotPass,
 	}
 }
 
