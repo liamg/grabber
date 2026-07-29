@@ -443,8 +443,9 @@ type cloneAttempt struct {
 }
 
 // cloneAttempts returns the ordered reference candidates to try for this
-// download. A named ref is tried as a branch and then as a tag; no ref clones
-// just the default branch.
+// download. A bare name is tried as a branch and then as a tag; a ref that
+// already says which namespace it belongs to is used as-is; no ref clones just
+// the default branch.
 func (d *Downloader) cloneAttempts() []cloneAttempt {
 	switch {
 	case looksLikeCommitHash(d.ref):
@@ -456,11 +457,44 @@ func (d *Downloader) cloneAttempts() []cloneAttempt {
 	case d.ref == "":
 		return []cloneAttempt{{"", true}}
 	default:
+		if qualified, ok := qualifiedRefName(d.ref); ok {
+			return []cloneAttempt{{qualified, true}}
+		}
 		// No fallback to the default branch, so we error if the ref doesn't exist.
-		return []cloneAttempt{
+		attempts := []cloneAttempt{
 			{plumbing.NewBranchReferenceName(d.ref), true},
 			{plumbing.NewTagReferenceName(d.ref), true},
 		}
+		// A name containing a slash may belong to a namespace other than heads
+		// or tags — "notes/...", "pull/123/head", "remotes/origin/...". git
+		// resolves those as refs/<name>, so try that too. It goes last because a
+		// slash is far more often just a branch ("feature/foo"), and this costs a
+		// clone attempt only on the path that was going to fail anyway.
+		if strings.Contains(d.ref, "/") {
+			attempts = append(attempts, cloneAttempt{plumbing.ReferenceName("refs/" + d.ref), true})
+		}
+		return attempts
+	}
+}
+
+// qualifiedRefName expands a ref that already names its namespace into a full
+// reference name, reporting false for a bare name the caller should resolve by
+// searching.
+//
+// git resolves "tags/v1.0.0" and "refs/tags/v1.0.0" as readily as "v1.0.0", and
+// module sources in the wild are pinned all three ways — "?ref=tags/0.19.2" is
+// the convention across the cloudposse modules, for instance. Prefixing those
+// unconditionally produces "refs/tags/tags/v1.0.0", which cannot resolve.
+func qualifiedRefName(ref string) (plumbing.ReferenceName, bool) {
+	switch {
+	case strings.HasPrefix(ref, "refs/"):
+		return plumbing.ReferenceName(ref), true
+	case strings.HasPrefix(ref, "tags/"):
+		return plumbing.NewTagReferenceName(strings.TrimPrefix(ref, "tags/")), true
+	case strings.HasPrefix(ref, "heads/"):
+		return plumbing.NewBranchReferenceName(strings.TrimPrefix(ref, "heads/")), true
+	default:
+		return "", false
 	}
 }
 
