@@ -198,10 +198,19 @@ type HTTPSCredential struct {
 // URL. Matching works like git credential helpers: host must match, and if the
 // credential has a path, it must be a prefix of the URL path. The most specific
 // match (longest path prefix) wins. Returns nil if no credential matches.
+//
+// A username in the URL names the account to authenticate as, and only a
+// credential for that account matches. git filters the same way: it will not
+// pair a stored password with an account it was not stored against.
 func (s Settings) MatchHTTPSCredential(rawURL string) *HTTPSCredential {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return nil
+	}
+
+	urlUser := ""
+	if u.User != nil {
+		urlUser = u.User.Username()
 	}
 
 	var best *HTTPSCredential
@@ -211,6 +220,10 @@ func (s Settings) MatchHTTPSCredential(rawURL string) *HTTPSCredential {
 		cred := &s.HTTPSCredentials[i]
 
 		if !strings.EqualFold(cred.Host, u.Hostname()) {
+			continue
+		}
+
+		if urlUser != "" && !strings.EqualFold(cred.Username, urlUser) {
 			continue
 		}
 
@@ -224,8 +237,11 @@ func (s Settings) MatchHTTPSCredential(rawURL string) *HTTPSCredential {
 				bestPathLen = len(credPath)
 				best = cred
 			}
-		} else if bestPathLen < 0 {
-			// Host-only match — use if no path-specific match found yet.
+			continue
+		}
+
+		// Host-only match — use if no path-specific match found yet.
+		if bestPathLen < 0 {
 			best = cred
 		}
 	}

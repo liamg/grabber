@@ -16,12 +16,26 @@ func stubCredentialFill(t *testing.T, ret *http.BasicAuth) *bool {
 	t.Helper()
 	called := false
 	orig := credentialFillFunc
-	credentialFillFunc = func(_ context.Context, _, _ string) *http.BasicAuth {
+	credentialFillFunc = func(_ context.Context, _, _, _ string) *http.BasicAuth {
 		called = true
 		return ret
 	}
 	t.Cleanup(func() { credentialFillFunc = orig })
 	return &called
+}
+
+// stubCredentialFillRecordingUser is stubCredentialFill but also captures the
+// username the helper was asked about, which is how the lookup is narrowed.
+func stubCredentialFillRecordingUser(t *testing.T, ret *http.BasicAuth) *string {
+	t.Helper()
+	var gotUser string
+	orig := credentialFillFunc
+	credentialFillFunc = func(_ context.Context, _, _, username string) *http.BasicAuth {
+		gotUser = username
+		return ret
+	}
+	t.Cleanup(func() { credentialFillFunc = orig })
+	return &gotUser
 }
 
 func TestResolveAuth_SystemCredentialHelper(t *testing.T) {
@@ -200,4 +214,86 @@ func TestResolveAuth_SSHKeyUsesHostKeyCallback(t *testing.T) {
 	if pk.HostKeyCallback == nil {
 		t.Error("expected an in-memory host key callback to be set")
 	}
+}
+
+func TestResolveAuth_URLUsernameWithoutPassword(t *testing.T) {
+	// "git::https://org@dev.azure.com/..." names the account without committing
+	// a secret. Treating it as a complete credential sends an empty password.
+	const repoURL = "https://acme@dev.azure.com/acme/DevOps/_git/Automation"
+
+	t.Run("configured credential is still consulted", func(t *testing.T) {
+		stubCredentialFill(t, nil)
+		d := &Downloader{repoURL: repoURL}
+
+		auth, err := d.resolveAuth(context.Background(), settings.Settings{
+			HTTPSCredentials: []settings.HTTPSCredential{
+				{Host: "dev.azure.com", Username: "acme", Password: "pat"},
+			},
+		})
+		if err != nil {
+			t.Fatalf("resolveAuth: %v", err)
+		}
+		ba, ok := auth.(*http.BasicAuth)
+		if !ok {
+			t.Fatalf("expected *http.BasicAuth, got %T", auth)
+		}
+		if ba.Password != "pat" {
+			t.Errorf("password = %q, want the configured credential", ba.Password)
+		}
+	})
+
+	t.Run("username is passed to the credential helper", func(t *testing.T) {
+		gotUser := stubCredentialFillRecordingUser(t,
+			&http.BasicAuth{Username: "acme", Password: "from-helper"})
+		d := &Downloader{repoURL: repoURL}
+
+		if _, err := d.resolveAuth(context.Background(), settings.Settings{}); err != nil {
+			t.Fatalf("resolveAuth: %v", err)
+		}
+		if *gotUser != "acme" {
+			t.Errorf("helper asked about %q, want the URL's username", *gotUser)
+		}
+	})
+
+	t.Run("username alone is the last resort", func(t *testing.T) {
+		// Some hosts accept a token in the username position, so it must not be
+		// dropped when nothing else supplies a password.
+		stubCredentialFill(t, nil)
+		d := &Downloader{repoURL: repoURL}
+
+		auth, err := d.resolveAuth(context.Background(), settings.Settings{})
+		if err != nil {
+			t.Fatalf("resolveAuth: %v", err)
+		}
+		ba, ok := auth.(*http.BasicAuth)
+		if !ok {
+			t.Fatalf("expected *http.BasicAuth, got %T", auth)
+		}
+		if ba.Username != "acme" || ba.Password != "" {
+			t.Errorf("auth = %q/%q, want the URL's username with no password", ba.Username, ba.Password)
+		}
+	})
+
+	t.Run("a password in the URL still wins outright", func(t *testing.T) {
+		called := stubCredentialFill(t, nil)
+		d := &Downloader{repoURL: "https://user:secret@example.com/org/repo.git"}
+		defer func() {
+			if *called {
+				t.Error("credential helper must not be consulted for a complete URL credential")
+			}
+		}()
+
+		auth, err := d.resolveAuth(context.Background(), settings.Settings{
+			HTTPSCredentials: []settings.HTTPSCredential{
+				{Host: "example.com", Username: "other", Password: "other-pass"},
+			},
+		})
+		if err != nil {
+			t.Fatalf("resolveAuth: %v", err)
+		}
+		ba := auth.(*http.BasicAuth)
+		if ba.Username != "user" || ba.Password != "secret" {
+			t.Errorf("auth = %q/%q, want user/secret from the URL", ba.Username, ba.Password)
+		}
+	})
 }

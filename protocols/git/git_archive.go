@@ -108,9 +108,14 @@ func (d *Downloader) fetchArchive(ctx context.Context, tmpDir string, s settings
 // HTTPS credentials, then the system git credential helper. The SSH placeholder
 // user "git" is ignored since it is not a real credential.
 func (d *Downloader) archiveCredentials(ctx context.Context, u *url.URL, s settings.Settings) (username, password string, ok bool) {
+	urlUser := ""
 	if u.User != nil && u.User.Username() != "" && u.User.Username() != "git" {
-		pw, _ := u.User.Password()
-		return u.User.Username(), pw, true
+		if pw, hasPassword := u.User.Password(); hasPassword {
+			return u.User.Username(), pw, true
+		}
+		// A username with no password names the account rather than
+		// authenticating it; the password comes from one of the sources below.
+		urlUser = u.User.Username()
 	}
 
 	if cred := s.MatchHTTPSCredential(u.String()); cred != nil {
@@ -124,9 +129,14 @@ func (d *Downloader) archiveCredentials(ctx context.Context, u *url.URL, s setti
 
 	// The system git credential helper is a system fallback.
 	if !s.NoSystemFallback && (u.Scheme == "https" || u.Scheme == "http") {
-		if auth := credentialFillFunc(ctx, u.Scheme, u.Hostname()); auth != nil {
+		if auth := credentialFillFunc(ctx, u.Scheme, u.Hostname(), urlUser); auth != nil {
 			return auth.Username, auth.Password, true
 		}
+	}
+
+	// Some hosts accept a token in the username position with no password.
+	if urlUser != "" {
+		return urlUser, "", true
 	}
 
 	return "", "", false
