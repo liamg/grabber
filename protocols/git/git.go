@@ -31,7 +31,10 @@ import (
 
 type Protocol struct{}
 
-var _ protocols.Protocol = (*Protocol)(nil)
+var (
+	_ protocols.Protocol       = (*Protocol)(nil)
+	_ protocols.ForcedDetector = (*Protocol)(nil)
+)
 
 func New() *Protocol {
 	return &Protocol{}
@@ -49,7 +52,19 @@ func (p *Protocol) Priority() int {
 var scpPattern = regexp.MustCompile(`^(?:[a-zA-Z0-9_]+)@[a-zA-Z0-9._-]+:`)
 
 func (p *Protocol) Detect(rawURL string) (protocols.Downloadable, bool) {
-	d, err := parseGitURL(rawURL)
+	d, err := parseGitURL(rawURL, false)
+	if err != nil {
+		return nil, false
+	}
+	return d, true
+}
+
+// DetectForced accepts any URL it can parse, without the guesswork Detect needs.
+// A "git::" prefix is the caller stating the remote is a Git repository, so a
+// URL that neither ends in ".git" nor names one of the hosts we happen to know
+// about - a self-hosted instance, typically - has to be accepted on their word.
+func (p *Protocol) DetectForced(rawURL string) (protocols.Downloadable, bool) {
+	d, err := parseGitURL(rawURL, true)
 	if err != nil {
 		return nil, false
 	}
@@ -74,7 +89,10 @@ func (p *Protocol) Detect(rawURL string) (protocols.Downloadable, bool) {
 // destination tree. If both are given, "//subdir" wins.
 //
 // NOTE: all of the above formats can also include the prefix "git::" to help with detection, but the prefix is stripped before parsing.
-func parseGitURL(rawURL string) (*Downloader, error) {
+//
+// forced reports whether the caller used the "git::" prefix, which commits them
+// to this protocol and so skips the is-this-a-Git-URL guesswork.
+func parseGitURL(rawURL string, forced bool) (*Downloader, error) {
 	// Check for SCP-style URLs first (git@host:user/repo.git).
 	if scpPattern.MatchString(rawURL) {
 		return parseSCPURL(rawURL)
@@ -90,7 +108,7 @@ func parseGitURL(rawURL string) (*Downloader, error) {
 		return nil, err
 	}
 
-	if !isGitURL(u) {
+	if !forced && !isGitURL(u) {
 		return nil, errors.New("not a Git URL")
 	}
 

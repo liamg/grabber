@@ -88,7 +88,7 @@ func TestParseHgURL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			d, err := parseHgURL(tt.url)
+			d, err := parseHgURL(tt.url, false)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatal("expected error, got nil")
@@ -108,6 +108,31 @@ func TestParseHgURL(t *testing.T) {
 				t.Errorf("subdir = %q, want %q", d.subdir, tt.wantSubdir)
 			}
 		})
+	}
+}
+
+// TestDetectForced covers the URLs an "hg::" prefix has to rescue. Auto-
+// detection only recognises hosts known to serve Mercurial, and a self-hosted
+// instance is on no such list, so the prefix is the only thing that can identify
+// it.
+func TestDetectForced(t *testing.T) {
+	p := New()
+
+	const selfHosted = "https://hg.selfhosted.example.com/org/repo"
+	if _, ok := p.Detect(selfHosted); ok {
+		t.Error("Detect accepted an unknown host; auto-detection must stay strict")
+	}
+	d, ok := p.DetectForced(selfHosted + "//sub?rev=v1.0.0")
+	if !ok {
+		t.Fatal("DetectForced rejected a self-hosted URL")
+	}
+	dl := d.(*Downloader)
+	if dl.repoURL != selfHosted || dl.subdir != "sub" || dl.rev != "v1.0.0" {
+		t.Errorf("parsed %+v, want the repo, subdir and rev split out", dl)
+	}
+
+	if _, ok := p.DetectForced("://not a url"); ok {
+		t.Error("DetectForced accepted an unparseable URL")
 	}
 }
 

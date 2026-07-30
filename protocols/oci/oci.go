@@ -24,7 +24,10 @@ import (
 
 type Protocol struct{}
 
-var _ protocols.Protocol = (*Protocol)(nil)
+var (
+	_ protocols.Protocol       = (*Protocol)(nil)
+	_ protocols.ForcedDetector = (*Protocol)(nil)
+)
 
 func New() *Protocol {
 	return &Protocol{}
@@ -39,7 +42,18 @@ func (p *Protocol) Priority() int {
 }
 
 func (p *Protocol) Detect(rawURL string) (protocols.Downloadable, bool) {
-	d, err := parseOCIURL(rawURL)
+	d, err := parseOCIURL(rawURL, false)
+	if err != nil {
+		return nil, false
+	}
+	return d, true
+}
+
+// DetectForced accepts a reference that does not repeat the scheme. An "oci::"
+// prefix has already said what the remote is, so requiring "oci://" after it
+// asks the caller to say so twice.
+func (p *Protocol) DetectForced(rawURL string) (protocols.Downloadable, bool) {
+	d, err := parseOCIURL(rawURL, true)
 	if err != nil {
 		return nil, false
 	}
@@ -52,9 +66,18 @@ func (p *Protocol) Detect(rawURL string) (protocols.Downloadable, bool) {
 //   - oci://registry.example.com/repo:tag
 //   - oci://registry.example.com/repo@sha256:digest
 //   - oci://registry.example.com/repo (defaults to :latest)
-func parseOCIURL(rawURL string) (*Downloader, error) {
-	// Must use oci:// scheme for auto-detection.
-	if !strings.HasPrefix(rawURL, "oci://") {
+//   - registry.example.com/repo:tag             (scheme omitted, forced only)
+//
+// forced reports whether the caller used the "oci::" prefix, which commits them
+// to this protocol and so makes the "oci://" scheme optional.
+func parseOCIURL(rawURL string, forced bool) (*Downloader, error) {
+	// Auto-detection has only the scheme to go on, so it is required there.
+	if !forced && !strings.HasPrefix(rawURL, "oci://") {
+		return nil, errors.New("not an OCI URL")
+	}
+	// A forced URL may still carry the scheme, and an http(s) one is not an OCI
+	// reference at all: the registry is reached over https regardless.
+	if forced && strings.Contains(rawURL, "://") && !strings.HasPrefix(rawURL, "oci://") {
 		return nil, errors.New("not an OCI URL")
 	}
 

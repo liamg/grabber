@@ -102,7 +102,7 @@ func TestParseGCSURL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			d, err := parseGCSURL(tt.url)
+			d, err := parseGCSURL(tt.url, false)
 			if tt.wantErr {
 				if err == nil {
 					t.Errorf("parseGCSURL(%q) expected error", tt.url)
@@ -119,6 +119,43 @@ func TestParseGCSURL(t *testing.T) {
 				t.Errorf("key = %q, want %q", d.key, tt.wantKey)
 			}
 		})
+	}
+}
+
+// TestDetectForced covers a storage-compatible endpoint, which carries no
+// googleapis.com name for auto-detection to recognise. The host has to survive
+// into the downloader: dropping it would send the request to Google instead of
+// where the caller pointed.
+func TestDetectForced(t *testing.T) {
+	p := New()
+
+	const custom = "https://gcs.example.com/my-bucket/path/to/object"
+	if _, ok := p.Detect(custom); ok {
+		t.Error("Detect accepted an unknown host; auto-detection must stay strict")
+	}
+	d, ok := p.DetectForced(custom)
+	if !ok {
+		t.Fatal("DetectForced rejected a custom endpoint")
+	}
+	dl := d.(*Downloader)
+	if dl.bucket != "my-bucket" || dl.key != "path/to/object" {
+		t.Errorf("bucket/key = %q/%q, want my-bucket/path/to/object", dl.bucket, dl.key)
+	}
+	if dl.endpoint != "https://gcs.example.com" {
+		t.Errorf("endpoint = %q, want the host from the URL", dl.endpoint)
+	}
+
+	// Google's own hosts keep their existing parse and name no endpoint.
+	d, ok = p.DetectForced("https://storage.googleapis.com/my-bucket/key")
+	if !ok {
+		t.Fatal("DetectForced rejected a Google host")
+	}
+	if dl := d.(*Downloader); dl.endpoint != "" {
+		t.Errorf("endpoint = %q, want empty for a Google host", dl.endpoint)
+	}
+
+	if _, ok := p.DetectForced("https://gcs.example.com/"); ok {
+		t.Error("DetectForced accepted a URL naming no bucket")
 	}
 }
 

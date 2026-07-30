@@ -110,7 +110,7 @@ func TestParseOCIURL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			d, err := parseOCIURL(tt.url)
+			d, err := parseOCIURL(tt.url, false)
 			if tt.wantErr {
 				if err == nil {
 					t.Errorf("parseOCIURL(%q) expected error", tt.url)
@@ -127,6 +127,37 @@ func TestParseOCIURL(t *testing.T) {
 				t.Errorf("registry = %q, want %q", d.registry, tt.wantRegistry)
 			}
 		})
+	}
+}
+
+// TestDetectForced covers a reference that does not repeat the scheme, which
+// auto-detection has to reject because the scheme is all it has to go on.
+func TestDetectForced(t *testing.T) {
+	p := New()
+
+	const ref = "registry.example.com/repo:tag"
+	if _, ok := p.Detect(ref); ok {
+		t.Error("Detect accepted a reference with no scheme; it has nothing else to go on")
+	}
+	d, ok := p.DetectForced(ref)
+	if !ok {
+		t.Fatal("DetectForced rejected a scheme-less reference")
+	}
+	dl := d.(*Downloader)
+	if dl.ref != ref || dl.registry != "registry.example.com" {
+		t.Errorf("parsed %+v, want the reference and registry from the URL", dl)
+	}
+
+	// The scheme is optional, not forbidden.
+	if _, ok := p.DetectForced("oci://" + ref); !ok {
+		t.Error("DetectForced rejected a reference that did carry the scheme")
+	}
+
+	// Another scheme is not an OCI reference, whatever the prefix claims.
+	for _, url := range []string{"https://registry.example.com/repo", "registry.example.com"} {
+		if _, ok := p.DetectForced(url); ok {
+			t.Errorf("DetectForced accepted %q", url)
+		}
 	}
 }
 
