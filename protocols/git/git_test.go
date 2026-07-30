@@ -425,6 +425,34 @@ func TestSSHToHTTPS(t *testing.T) {
 			url:  "deploy@example.com:org/repo.git",
 			want: "https://example.com/org/repo.git",
 		},
+		{
+			// Azure DevOps serves HTTPS from a different host and path layout,
+			// so a scheme swap alone would leave a host that has no Git over
+			// HTTP. This is the inverse of the case in httpsToSSH.
+			name: "azure devops ssh scheme",
+			url:  "ssh://git@ssh.dev.azure.com/v3/org/proj/repo",
+			want: "https://dev.azure.com/org/proj/_git/repo",
+		},
+		{
+			name: "azure devops scp style",
+			url:  "git@ssh.dev.azure.com:v3/org/proj/repo",
+			want: "https://dev.azure.com/org/proj/_git/repo",
+		},
+		{
+			name: "azure devops without the v3 prefix is left alone",
+			url:  "ssh://git@ssh.dev.azure.com/org/proj/repo",
+			want: "https://ssh.dev.azure.com/org/proj/repo",
+		},
+		{
+			name: "azure devops with too few path segments is left alone",
+			url:  "ssh://git@ssh.dev.azure.com/v3/org/proj",
+			want: "https://ssh.dev.azure.com/v3/org/proj",
+		},
+		{
+			name: "azure devops https form is already correct",
+			url:  "https://dev.azure.com/org/proj/_git/repo",
+			want: "https://dev.azure.com/org/proj/_git/repo",
+		},
 	}
 
 	for _, tt := range tests {

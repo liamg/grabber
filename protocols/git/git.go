@@ -874,30 +874,67 @@ func httpsToSSH(rawURL string) string {
 // sshToHTTPS converts SSH and SCP-style Git URLs to HTTPS.
 // e.g. "git@github.com:user/repo.git" -> "https://github.com/user/repo.git"
 // e.g. "ssh://git@github.com/user/repo.git" -> "https://github.com/user/repo.git"
+// e.g. "ssh://git@ssh.dev.azure.com/v3/org/proj/repo" -> "https://dev.azure.com/org/proj/_git/repo"
 // If the URL is already HTTPS or cannot be parsed, it is returned unchanged.
 func sshToHTTPS(rawURL string) string {
+	var https string
+
+	switch {
 	// SCP-style: git@github.com:user/repo.git
-	if scpPattern.MatchString(rawURL) {
+	case scpPattern.MatchString(rawURL):
 		// Find the @ and : to extract host and path.
 		atIdx := strings.Index(rawURL, "@")
 		colonIdx := strings.Index(rawURL[atIdx:], ":") + atIdx
 		host := rawURL[atIdx+1 : colonIdx]
 		path := rawURL[colonIdx+1:]
-		return "https://" + host + "/" + path
-	}
+		https = "https://" + host + "/" + path
 
 	// ssh:// scheme
-	if strings.HasPrefix(rawURL, "ssh://") {
+	case strings.HasPrefix(rawURL, "ssh://"):
 		u, err := url.Parse(rawURL)
 		if err != nil {
 			return rawURL
 		}
 		u.Scheme = "https"
 		u.User = nil
-		return u.String()
+		https = u.String()
+
+	default:
+		return rawURL
 	}
 
-	return rawURL
+	// Azure DevOps needs more than a scheme swap, so give it the chance to
+	// rewrite the result before it is returned.
+	if azure := azureDevOpsHTTPS(https); azure != "" {
+		return azure
+	}
+	return https
+}
+
+// azureDevOpsHTTPS rewrites the plain scheme swap of an Azure DevOps SSH remote
+// onto the host and path layout that actually serves Git over HTTPS. It is the
+// inverse of the Azure DevOps case in httpsToSSH: the SSH form lives on
+// ssh.dev.azure.com beneath a "v3" prefix, while the HTTPS form lives on
+// dev.azure.com and introduces the repository with a "_git" segment. Swapping
+// only the scheme leaves a host that does not serve Git over HTTP at all.
+//
+// e.g. "https://ssh.dev.azure.com/v3/org/proj/repo" -> "https://dev.azure.com/org/proj/_git/repo"
+//
+// It returns "" for any other host, leaving the scheme swap to stand.
+func azureDevOpsHTTPS(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Hostname() != "ssh.dev.azure.com" {
+		return ""
+	}
+
+	parts := strings.Split(strings.TrimPrefix(u.Path, "/"), "/")
+	if len(parts) < 4 || parts[0] != "v3" {
+		return ""
+	}
+
+	u.Host = "dev.azure.com"
+	u.Path = fmt.Sprintf("/%s/%s/_git/%s", parts[1], parts[2], parts[3])
+	return u.String()
 }
 
 func (d *Downloader) resolveDepth(s settings.Settings) int {
