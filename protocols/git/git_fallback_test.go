@@ -82,6 +82,21 @@ func TestHTTPSToSSH(t *testing.T) {
 	}
 }
 
+// TestAzureDevOpsRoundTrip pins the two conversions as inverses of each other.
+// Azure DevOps is the one host whose SSH and HTTPS remotes differ by more than
+// a scheme, so the pair has to be kept in step by hand.
+func TestAzureDevOpsRoundTrip(t *testing.T) {
+	const https = "https://dev.azure.com/org/proj/_git/repo"
+
+	ssh := httpsToSSH(https)
+	if ssh != "ssh://git@ssh.dev.azure.com/v3/org/proj/repo" {
+		t.Fatalf("httpsToSSH(%q) = %q", https, ssh)
+	}
+	if got := sshToHTTPS(ssh); got != https {
+		t.Errorf("sshToHTTPS(%q) = %q, want the original %q", ssh, got, https)
+	}
+}
+
 func TestGitHostPort(t *testing.T) {
 	tests := []struct {
 		url, host, port string
