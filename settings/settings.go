@@ -199,11 +199,9 @@ type HTTPSCredential struct {
 // credential has a path, it must be a prefix of the URL path. The most specific
 // match (longest path prefix) wins. Returns nil if no credential matches.
 //
-// A username in the URL names the account to authenticate as, so a credential
-// for that account is preferred over one for another — this mirrors git, which
-// passes the username to its credential helpers to narrow the lookup. It is only
-// a preference: a host with one configured credential still matches whatever
-// username the URL carries.
+// A username in the URL names the account to authenticate as, and only a
+// credential for that account matches. git filters the same way: it will not
+// pair a stored password with an account it was not stored against.
 func (s Settings) MatchHTTPSCredential(rawURL string) *HTTPSCredential {
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -215,8 +213,8 @@ func (s Settings) MatchHTTPSCredential(rawURL string) *HTTPSCredential {
 		urlUser = u.User.Username()
 	}
 
-	var best, bestNamed *HTTPSCredential
-	bestPathLen, bestNamedPathLen := -1, -1
+	var best *HTTPSCredential
+	bestPathLen := -1
 
 	for i := range s.HTTPSCredentials {
 		cred := &s.HTTPSCredentials[i]
@@ -225,7 +223,9 @@ func (s Settings) MatchHTTPSCredential(rawURL string) *HTTPSCredential {
 			continue
 		}
 
-		named := urlUser != "" && strings.EqualFold(cred.Username, urlUser)
+		if urlUser != "" && !strings.EqualFold(cred.Username, urlUser) {
+			continue
+		}
 
 		if cred.Path != "" {
 			credPath := strings.TrimSuffix(cred.Path, "/")
@@ -237,10 +237,6 @@ func (s Settings) MatchHTTPSCredential(rawURL string) *HTTPSCredential {
 				bestPathLen = len(credPath)
 				best = cred
 			}
-			if named && len(credPath) > bestNamedPathLen {
-				bestNamedPathLen = len(credPath)
-				bestNamed = cred
-			}
 			continue
 		}
 
@@ -248,14 +244,8 @@ func (s Settings) MatchHTTPSCredential(rawURL string) *HTTPSCredential {
 		if bestPathLen < 0 {
 			best = cred
 		}
-		if named && bestNamedPathLen < 0 {
-			bestNamed = cred
-		}
 	}
 
-	if bestNamed != nil {
-		return bestNamed
-	}
 	return best
 }
 

@@ -600,12 +600,13 @@ func (d *Downloader) resolveAuth(ctx context.Context, s settings.Settings) (any,
 			}, nil
 		}
 		// A username with no password is not a credential. It names the account
-		// to authenticate as — "git::https://org@dev.azure.com/..." is a common
-		// way to pin that without committing a secret — and the password has to
-		// come from somewhere else. Treating it as complete sends an empty
-		// password and earns a 401, with the configured credentials below never
-		// consulted. git resolves it the same way: the username is passed to the
-		// credential helpers as a hint, not used on its own.
+		// to authenticate as, and the password has to come from somewhere else.
+		// Returning it as-is sends an empty password and earns a 401, with the
+		// sources below never consulted.
+		//
+		// It does narrow those sources: only a credential for that account will
+		// do, and the account is passed to the system helper so it can select
+		// the right one. This is how git resolves a username in the URL.
 		urlUser = u.User.Username()
 	}
 

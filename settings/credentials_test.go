@@ -49,39 +49,49 @@ func TestRequestCredential(t *testing.T) {
 	})
 }
 
-func TestMatchHTTPSCredential_PrefersURLUsername(t *testing.T) {
+func TestMatchHTTPSCredential_FiltersByURLUsername(t *testing.T) {
 	s := Settings{
 		HTTPSCredentials: []HTTPSCredential{
-			{Host: "dev.azure.com", Username: "other", Password: "other-pass"},
-			{Host: "dev.azure.com", Username: "acme", Password: "acme-pass"},
+			{Host: "example.com", Username: "other", Password: "other-pass"},
+			{Host: "example.com", Username: "acme", Password: "acme-pass"},
 		},
 	}
 
-	t.Run("named account wins", func(t *testing.T) {
-		got := s.MatchHTTPSCredential("https://acme@dev.azure.com/acme/DevOps/_git/x")
+	t.Run("the named account is selected", func(t *testing.T) {
+		got := s.MatchHTTPSCredential("https://acme@example.com/org/repo")
 		if got == nil || got.Password != "acme-pass" {
 			t.Fatalf("got %#v, want the credential for the named account", got)
 		}
 	})
 
-	t.Run("no username in URL keeps existing behaviour", func(t *testing.T) {
+	t.Run("no username in the URL matches on host alone", func(t *testing.T) {
 		// Host-only credentials do not rank against each other, so the last one
-		// configured wins. The username preference does not disturb that.
-		got := s.MatchHTTPSCredential("https://dev.azure.com/acme/DevOps/_git/x")
+		// configured wins. Unchanged by the username filter.
+		got := s.MatchHTTPSCredential("https://example.com/org/repo")
 		if got == nil || got.Password != "acme-pass" {
 			t.Fatalf("got %#v, want the last host-only match", got)
 		}
 	})
 
-	t.Run("unmatched username still falls back to the host credential", func(t *testing.T) {
-		// The configured account often differs from the URL's — a PAT stored
-		// under x-access-token, say. A non-match must not mean no credential.
-		one := Settings{HTTPSCredentials: []HTTPSCredential{
-			{Host: "dev.azure.com", Username: "x-access-token", Password: "pat"},
+	t.Run("a credential for another account does not match", func(t *testing.T) {
+		// git refuses to pair a stored password with an account it was not
+		// stored against, and so do we.
+		got := s.MatchHTTPSCredential("https://nobody@example.com/org/repo")
+		if got != nil {
+			t.Fatalf("got %#v, want no match", got)
+		}
+	})
+
+	t.Run("a credential with no username does not match a named request", func(t *testing.T) {
+		anon := Settings{HTTPSCredentials: []HTTPSCredential{
+			{Host: "example.com", Password: "pass"},
 		}}
-		got := one.MatchHTTPSCredential("https://acme@dev.azure.com/acme/DevOps/_git/x")
-		if got == nil || got.Password != "pat" {
-			t.Fatalf("got %#v, want the host credential", got)
+		if got := anon.MatchHTTPSCredential("https://acme@example.com/org/repo"); got != nil {
+			t.Fatalf("got %#v, want no match", got)
+		}
+		// ...but still matches when no account is named.
+		if got := anon.MatchHTTPSCredential("https://example.com/org/repo"); got == nil {
+			t.Fatal("expected the host credential to match an unnamed request")
 		}
 	})
 
