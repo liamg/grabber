@@ -16,7 +16,10 @@ import (
 
 type Protocol struct{}
 
-var _ protocols.Protocol = (*Protocol)(nil)
+var (
+	_ protocols.Protocol       = (*Protocol)(nil)
+	_ protocols.ForcedDetector = (*Protocol)(nil)
+)
 
 func New() *Protocol {
 	return &Protocol{}
@@ -36,7 +39,18 @@ var knownHgHosts = []string{
 }
 
 func (p *Protocol) Detect(rawURL string) (protocols.Downloadable, bool) {
-	d, err := parseHgURL(rawURL)
+	d, err := parseHgURL(rawURL, false)
+	if err != nil {
+		return nil, false
+	}
+	return d, true
+}
+
+// DetectForced accepts any URL it can parse, without requiring a host we happen
+// to know hosts Mercurial. An "hg::" prefix is the caller stating the remote is
+// a Mercurial repository, and a self-hosted one is on no such list.
+func (p *Protocol) DetectForced(rawURL string) (protocols.Downloadable, bool) {
+	d, err := parseHgURL(rawURL, true)
 	if err != nil {
 		return nil, false
 	}
@@ -50,8 +64,9 @@ func (p *Protocol) Detect(rawURL string) (protocols.Downloadable, bool) {
 //   - https://bitbucket.org/user/repo//subdir
 //   - https://bitbucket.org/user/repo?rev=v1.0.0
 //
-// Detection is based on known hosts or the hg:: prefix.
-func parseHgURL(rawURL string) (*Downloader, error) {
+// forced reports whether the caller used the "hg::" prefix, which commits them
+// to this protocol and so skips the known-host check.
+func parseHgURL(rawURL string, forced bool) (*Downloader, error) {
 	if !strings.Contains(rawURL, "://") {
 		rawURL = "https://" + rawURL
 	}
@@ -61,7 +76,7 @@ func parseHgURL(rawURL string) (*Downloader, error) {
 		return nil, err
 	}
 
-	if !isHgURL(u) {
+	if !forced && !isHgURL(u) {
 		return nil, errors.New("not a Mercurial URL")
 	}
 

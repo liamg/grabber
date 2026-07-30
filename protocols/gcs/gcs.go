@@ -22,7 +22,10 @@ import (
 
 type Protocol struct{}
 
-var _ protocols.Protocol = (*Protocol)(nil)
+var (
+	_ protocols.Protocol       = (*Protocol)(nil)
+	_ protocols.ForcedDetector = (*Protocol)(nil)
+)
 
 func New() *Protocol {
 	return &Protocol{}
@@ -37,7 +40,19 @@ func (p *Protocol) Priority() int {
 }
 
 func (p *Protocol) Detect(rawURL string) (protocols.Downloadable, bool) {
-	d, err := parseGCSURL(rawURL)
+	d, err := parseGCSURL(rawURL, false)
+	if err != nil {
+		return nil, false
+	}
+	return d, true
+}
+
+// DetectForced accepts a host that is not one of Google's own, reading it as a
+// storage-compatible endpoint. A "gcs::" prefix is the caller stating the remote
+// speaks the GCS API, which an emulator or a private endpoint does without
+// carrying a googleapis.com name.
+func (p *Protocol) DetectForced(rawURL string) (protocols.Downloadable, bool) {
+	d, err := parseGCSURL(rawURL, true)
 	if err != nil {
 		return nil, false
 	}
@@ -50,7 +65,12 @@ func (p *Protocol) Detect(rawURL string) (protocols.Downloadable, bool) {
 //   - storage.googleapis.com/bucket/key
 //   - storage.cloud.google.com/bucket/key
 //   - bucket.storage.googleapis.com/key
-func parseGCSURL(rawURL string) (*Downloader, error) {
+//   - https://custom-host/bucket/key            (custom endpoint, forced only)
+//
+// forced reports whether the caller used the "gcs::" prefix. It commits them to
+// this protocol, so a host that is none of the above is read as a custom
+// endpoint (path-style, bucket = first path segment) rather than rejected.
+func parseGCSURL(rawURL string, forced bool) (*Downloader, error) {
 	if !strings.Contains(rawURL, "://") {
 		rawURL = "https://" + rawURL
 	}
@@ -62,23 +82,22 @@ func parseGCSURL(rawURL string) (*Downloader, error) {
 
 	host := strings.ToLower(u.Hostname())
 
-	var bucket, key string
+	var bucket, key, endpoint string
 
 	switch {
 	case host == "storage.googleapis.com" || host == "storage.cloud.google.com":
 		// Path-style: storage.googleapis.com/bucket/key
-		path := strings.TrimPrefix(u.Path, "/")
-		slashIdx := strings.Index(path, "/")
-		if slashIdx == -1 {
-			bucket = path
-		} else {
-			bucket = path[:slashIdx]
-			key = path[slashIdx+1:]
-		}
+		bucket, key = splitBucketKey(u.Path)
 	case strings.HasSuffix(host, ".storage.googleapis.com"):
 		// Virtual-hosted: bucket.storage.googleapis.com/key
 		bucket = strings.TrimSuffix(host, ".storage.googleapis.com")
 		key = strings.TrimPrefix(u.Path, "/")
+	case forced:
+		// The host names the endpoint to talk to, so it is carried through
+		// rather than dropped: a request built from the bucket alone would go to
+		// Google, which is not where the caller pointed us.
+		bucket, key = splitBucketKey(u.Path)
+		endpoint = u.Scheme + "://" + u.Host
 	default:
 		return nil, errors.New("not a GCS URL")
 	}
@@ -88,14 +107,27 @@ func parseGCSURL(rawURL string) (*Downloader, error) {
 	}
 
 	return &Downloader{
-		bucket: bucket,
-		key:    key,
+		bucket:   bucket,
+		key:      key,
+		endpoint: endpoint,
 	}, nil
+}
+
+// splitBucketKey splits a path-style "/bucket/key" into its two parts. The key
+// is empty when the path names only a bucket.
+func splitBucketKey(path string) (string, string) {
+	path = strings.TrimPrefix(path, "/")
+	bucket, key, _ := strings.Cut(path, "/")
+	return bucket, key
 }
 
 type Downloader struct {
 	bucket string
 	key    string
+	// endpoint is the storage-compatible host named by a forced URL, empty for
+	// Google's own. It takes precedence over the configured endpoint, being the
+	// more specific of the two.
+	endpoint string
 }
 
 var _ protocols.Downloadable = (*Downloader)(nil)
@@ -116,8 +148,12 @@ func (d *Downloader) Download(ctx context.Context, tmpDir string, s settings.Set
 func (d *Downloader) newService(ctx context.Context, s settings.Settings) (*storage.Service, error) {
 	var opts []option.ClientOption
 
-	if s.GCPCredentials.Endpoint != "" {
-		opts = append(opts, option.WithEndpoint(s.GCPCredentials.Endpoint))
+	endpoint := d.endpoint
+	if endpoint == "" {
+		endpoint = s.GCPCredentials.Endpoint
+	}
+	if endpoint != "" {
+		opts = append(opts, option.WithEndpoint(endpoint))
 	}
 
 	if s.GCPCredentials.ServiceAccountKey != "" {
@@ -131,7 +167,7 @@ func (d *Downloader) newService(ctx context.Context, s settings.Settings) (*stor
 			return nil, fmt.Errorf("parsing service account key: %w", err)
 		}
 		opts = append(opts, option.WithTokenSource(creds.TokenSource))
-	} else if s.GCPCredentials.Endpoint != "" {
+	} else if endpoint != "" {
 		// Custom endpoint (e.g. fake-gcs-server) — skip credential resolution.
 		opts = append(opts, option.WithoutAuthentication())
 	} else {

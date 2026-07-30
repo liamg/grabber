@@ -119,7 +119,7 @@ func TestParseGitURL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			d, err := parseGitURL(tt.url)
+			d, err := parseGitURL(tt.url, false)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatal("expected error, got nil")
@@ -142,6 +142,46 @@ func TestParseGitURL(t *testing.T) {
 				t.Errorf("depth = %d, want %d", d.depth, tt.wantDepth)
 			}
 		})
+	}
+}
+
+// TestDetectForced covers the URLs a "git::" prefix has to rescue: the caller
+// has said the remote is a Git repository, so neither a missing ".git" suffix
+// nor an unrecognised host is grounds for refusing it. Self-hosted instances
+// have both, and auto-detection cannot be loosened to accept them because it is
+// shared with every other protocol.
+func TestDetectForced(t *testing.T) {
+	p := New()
+
+	forcedOnly := []string{
+		"https://git.selfhosted.example.com/org/repo",
+		"https://git.selfhosted.example.com/org/repo//modules/vpc?ref=main",
+		"http://git.selfhosted.example.com/org/repo",
+	}
+	for _, url := range forcedOnly {
+		if _, ok := p.Detect(url); ok {
+			t.Errorf("Detect(%q) accepted; auto-detection must stay strict", url)
+		}
+		if _, ok := p.DetectForced(url); !ok {
+			t.Errorf("DetectForced(%q) rejected; the prefix commits to git", url)
+		}
+	}
+
+	// The prefix loosens which URLs are Git, not what a URL means: the ref and
+	// subdir still have to come out of it.
+	d, ok := p.DetectForced("https://git.selfhosted.example.com/org/repo//modules/vpc?ref=main&depth=1")
+	if !ok {
+		t.Fatal("expected the forced URL to be accepted")
+	}
+	dl := d.(*Downloader)
+	if dl.repoURL != "https://git.selfhosted.example.com/org/repo" || dl.subdir != "modules/vpc" ||
+		dl.ref != "main" || dl.depth != 1 {
+		t.Errorf("parsed %+v, want the repo, subdir, ref and depth split out", dl)
+	}
+
+	// Nothing that cannot be parsed at all becomes acceptable.
+	if _, ok := p.DetectForced("://not a url"); ok {
+		t.Error("DetectForced accepted an unparseable URL")
 	}
 }
 

@@ -105,8 +105,33 @@ func copyDir(src, dst string) error {
 			return os.MkdirAll(dstPath, info.Mode())
 		}
 
+		// filepath.Walk lstats, so a symlink arrives here as an ordinary entry
+		// and has to be recreated rather than read. See copySymlink.
+		if info.Mode()&os.ModeSymlink != 0 {
+			return copySymlink(path, dstPath)
+		}
+
 		return copyFile(path, dstPath)
 	})
+}
+
+// copySymlink recreates src's link at dst, pointing at the same target. The
+// target is not resolved: following it would copy the target's bytes in place
+// of the link, and a dangling link - or one pointing outside the source tree -
+// would fail the whole copy or pull in a file that was never asked for.
+func copySymlink(src, dst string) error {
+	target, err := os.Readlink(src)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	// A link may already be there from an earlier copy into the same tree.
+	if err := os.Remove(dst); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return os.Symlink(target, dst)
 }
 
 func copyFile(src, dst string) error {
