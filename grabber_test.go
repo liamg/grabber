@@ -50,6 +50,53 @@ func TestGrab_FileProtocol_Directory(t *testing.T) {
 	assertFile(t, filepath.Join(dst, "sub", "b.txt"), "bbb")
 }
 
+// TestGrab_PreservesSymlinks covers the three shapes a copy that follows links
+// gets wrong: one that dangles, one that resolves, and one naming a directory.
+// A repository is free to contain any of them and git checks them all out
+// without complaint, so a copy has to reproduce them rather than read through.
+func TestGrab_PreservesSymlinks(t *testing.T) {
+	srcDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(srcDir, "real.txt"), []byte("real"), 0o644); err != nil {
+		t.Fatalf("writing file: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(srcDir, "docs"), 0o755); err != nil {
+		t.Fatalf("creating dir: %v", err)
+	}
+
+	links := map[string]string{
+		// An absolute link to a path that does not exist. Following it fails the
+		// whole copy, and following one that did exist would have imported a
+		// file from the host into the destination.
+		"dangling.md":  "/nonexistent-README.md",
+		"resolves.txt": "../real.txt",
+		// Following a link to a directory reads a directory rather than a file.
+		"self": "../docs",
+	}
+	for name, target := range links {
+		if err := os.Symlink(target, filepath.Join(srcDir, "docs", name)); err != nil {
+			t.Fatalf("creating symlink %s: %v", name, err)
+		}
+	}
+
+	dst := filepath.Join(t.TempDir(), "output")
+	if err := New().Grab(context.Background(), srcDir, dst); err != nil {
+		t.Fatalf("Grab: %v", err)
+	}
+
+	for name, target := range links {
+		got, err := os.Readlink(filepath.Join(dst, "docs", name))
+		if err != nil {
+			t.Errorf("%s is not a symlink: %v", name, err)
+			continue
+		}
+		if got != target {
+			t.Errorf("%s points at %q, want %q", name, got, target)
+		}
+	}
+
+	assertFile(t, filepath.Join(dst, "real.txt"), "real")
+}
+
 func TestGrab_FileProtocol_FileScheme(t *testing.T) {
 	srcDir := t.TempDir()
 	srcFile := filepath.Join(srcDir, "data.txt")
