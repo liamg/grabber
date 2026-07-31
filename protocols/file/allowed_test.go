@@ -56,4 +56,18 @@ func TestDownload_AllowedLocalDirectories(t *testing.T) {
 			t.Errorf("expected no restriction by default, got %v", err)
 		}
 	})
+
+	t.Run("a symlinked intermediate component is resolved and rejected", func(t *testing.T) {
+		// allowed/via -> other, so a path through it (allowed/via/secret.txt)
+		// resolves to other/secret.txt, outside the allowed set. Symlink
+		// resolution must follow the intermediate component, not just the leaf.
+		via := filepath.Join(allowed, "via")
+		if err := os.Symlink(other, via); err != nil {
+			t.Fatal(err)
+		}
+		d := &Downloader{path: filepath.Join(via, "secret.txt")}
+		if _, err := d.Download(context.Background(), t.TempDir(), s); err == nil {
+			t.Error("expected a path through a symlinked intermediate component to be rejected")
+		}
+	})
 }
