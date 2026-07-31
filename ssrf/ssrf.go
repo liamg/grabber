@@ -96,6 +96,13 @@ func (g *Guard) hostAllowed(host string) bool {
 	return false
 }
 
+// HostAllowed reports whether host bypasses the guard by name (see the allow
+// list passed to New). It is exported for callers that dial outside DialContext
+// - the connect probe, for instance - and need to mirror its host exemption.
+func (g *Guard) HostAllowed(host string) bool {
+	return g.hostAllowed(host)
+}
+
 // ipAllowed reports whether ip is on the allowlist by literal or CIDR.
 func (g *Guard) ipAllowed(ip net.IP) bool {
 	for _, a := range g.allowIPs {
@@ -218,22 +225,7 @@ func (g *Guard) DialContext(exempt func(addr string) bool) func(ctx context.Cont
 	}
 
 	guarded := newDialer()
-	guarded.Control = func(_, address string, _ syscall.RawConn) error {
-		host, _, err := net.SplitHostPort(address)
-		if err != nil {
-			host = address
-		}
-		ip := net.ParseIP(host)
-		if ip == nil {
-			// Control is always called with a resolved IP:port; a parse failure
-			// is unexpected, so fail closed rather than risk a bypass.
-			return fmt.Errorf("ssrf guard: cannot parse dial address %q", address)
-		}
-		if g.Blocked(ip) {
-			return &BlockedAddressError{Host: host, IP: ip}
-		}
-		return nil
-	}
+	guarded.Control = g.Control
 
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		if (exempt != nil && exempt(addr)) || g.hostAllowed(hostOf(addr)) {
@@ -241,6 +233,28 @@ func (g *Guard) DialContext(exempt func(addr string) bool) func(ctx context.Cont
 		}
 		return guarded.DialContext(ctx, network, addr)
 	}
+}
+
+// Control is a net.Dialer.Control callback that rejects a connection whose
+// resolved address is blocked. The dialer invokes it after DNS resolution with
+// the concrete IP:port, which is what gives the check its DNS-rebinding and
+// redirect safety. It is used by DialContext and by callers that dial with
+// their own net.Dialer (the connect probe) and want the same guarantee.
+func (g *Guard) Control(_, address string, _ syscall.RawConn) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		host = address
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		// Control is always called with a resolved IP:port; a parse failure
+		// is unexpected, so fail closed rather than risk a bypass.
+		return fmt.Errorf("ssrf guard: cannot parse dial address %q", address)
+	}
+	if g.Blocked(ip) {
+		return &BlockedAddressError{Host: host, IP: ip}
+	}
+	return nil
 }
 
 // hostOf returns the host portion of a "host:port" address, or the input

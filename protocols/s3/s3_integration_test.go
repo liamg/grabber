@@ -125,7 +125,7 @@ func TestS3Integration_SingleFile(t *testing.T) {
 
 	lsClient := newLocalStackS3Client(t, endpoint)
 	fileDst := filepath.Join(dst, "hello.txt")
-	err := d.downloadFile(context.Background(), lsClient, "hello.txt", fileDst)
+	err := d.downloadFile(context.Background(), lsClient, "hello.txt", fileDst, 0)
 	if err != nil {
 		t.Fatalf("download: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestS3Integration_Directory(t *testing.T) {
 	}
 
 	lsClient := newLocalStackS3Client(t, endpoint)
-	err := d.downloadDir(context.Background(), lsClient, dst)
+	err := d.downloadDir(context.Background(), lsClient, dst, 0)
 	if err != nil {
 		t.Fatalf("download: %v", err)
 	}
@@ -221,7 +221,7 @@ func TestS3Integration_WithCredentials(t *testing.T) {
 	})
 
 	dst := filepath.Join(t.TempDir(), "secret.txt")
-	err = d.downloadFile(ctx, s3Client, "secret.txt", dst)
+	err = d.downloadFile(ctx, s3Client, "secret.txt", dst, 0)
 	if err != nil {
 		t.Fatalf("download: %v", err)
 	}
@@ -248,7 +248,7 @@ func TestS3Integration_EmptyBucket(t *testing.T) {
 	}
 
 	lsClient := newLocalStackS3Client(t, endpoint)
-	err := d.downloadDir(context.Background(), lsClient, dst)
+	err := d.downloadDir(context.Background(), lsClient, dst, 0)
 	if err != nil {
 		t.Fatalf("download: %v", err)
 	}

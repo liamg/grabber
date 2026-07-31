@@ -169,6 +169,30 @@ func WithAutoExtract(enabled bool) Option {
 	}
 }
 
+// WithMaxDownloadBytes caps the size of a single downloaded file and the total
+// size of a single archive extraction, so a decompression bomb or an unbounded
+// response body cannot exhaust the disk. The default is
+// settings.DefaultMaxBytes (10 GiB). Pass 0 (or a negative value) to disable
+// the limit. It does not apply to the OCI protocol, which pulls through oras's
+// own client.
+func WithMaxDownloadBytes(n int64) Option {
+	return func(g *Grabber) {
+		g.settings.MaxBytes = n
+	}
+}
+
+// WithAllowedLocalDirectories restricts the file:// protocol to the given
+// directories. When set, a local source path is rejected unless, after
+// resolving all symlinks, it resolves within one of them. Use it when grabber
+// may be handed untrusted URLs, so "file::/etc/passwd" (or a path that symlinks
+// out of an allowed tree) cannot read arbitrary files. Passing no directories
+// leaves the default (no restriction).
+func WithAllowedLocalDirectories(dirs ...string) Option {
+	return func(g *Grabber) {
+		g.settings.AllowedLocalDirs = append(g.settings.AllowedLocalDirs, dirs...)
+	}
+}
+
 func WithProtocols(protocols ...protocols.Protocol) Option {
 	return func(g *Grabber) {
 		g.protocols = protocols

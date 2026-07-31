@@ -96,7 +96,7 @@ func (d *Downloader) fetchArchive(ctx context.Context, tmpDir string, s settings
 	}
 	defer func() { _ = gzipR.Close() }()
 
-	if err := extractArchive(gzipR, tmpDir, d.subdir); err != nil {
+	if err := extractArchive(gzipR, tmpDir, d.subdir, s.MaxBytes); err != nil {
 		return fmt.Errorf("extracting archive: %w", err)
 	}
 
@@ -151,10 +151,11 @@ func (d *Downloader) archiveCredentials(ctx context.Context, u *url.URL, s setti
 // each directory along the path to it. Entries keep their repository-relative
 // path, so this fallback and the git path produce the same layout, and a caller
 // can merge several subdirectories of one repository into one destination.
-func extractArchive(r io.Reader, dst, subdir string) error {
+func extractArchive(r io.Reader, dst, subdir string, maxBytes int64) error {
 	tarR := tar.NewReader(r)
 	topDir := ""
 	found := false
+	remaining := maxBytes // total budget across entries; <= 0 means unlimited
 
 	for {
 		hdr, err := tarR.Next()
@@ -209,9 +210,11 @@ func extractArchive(r io.Reader, dst, subdir string) error {
 			continue
 		}
 
-		if err := writeArchiveFile(outPath, tarR, hdr.FileInfo().Mode()); err != nil {
+		n, err := writeArchiveFile(outPath, tarR, hdr.FileInfo().Mode().Perm(), maxBytes > 0, remaining)
+		if err != nil {
 			return err
 		}
+		remaining -= n
 	}
 
 	if subdir != "" && !found {
@@ -250,22 +253,34 @@ func archiveSelects(rel, subdir string, isDir bool) (selected, underSubdir bool)
 }
 
 // writeArchiveFile writes the current tar entry to path, creating parent
-// directories as needed.
-func writeArchiveFile(path string, r io.Reader, mode os.FileMode) error {
+// directories as needed, and returns the number of bytes written. remaining
+// bounds the write against the archive's total extraction budget; a value <= 0
+// means unlimited.
+func writeArchiveFile(path string, r io.Reader, mode os.FileMode, limited bool, remaining int64) (int64, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
+		return 0, err
 	}
 
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer func() { _ = f.Close() }()
 
-	if _, err := io.Copy(f, r); err != nil {
-		return err
+	if !limited {
+		return io.Copy(f, r)
 	}
-	return nil
+
+	// Read one past the remaining budget so an entry that would exhaust it is
+	// detected even when remaining has reached exactly zero.
+	n, err := io.Copy(f, io.LimitReader(r, remaining+1))
+	if err != nil {
+		return n, err
+	}
+	if n > remaining {
+		return n, fmt.Errorf("archive exceeds maximum extraction size")
+	}
+	return n, nil
 }
 
 // containsDotDot reports whether v has a ".." path segment, which would allow

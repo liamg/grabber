@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -15,6 +14,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
+	"github.com/liamg/grabber/internal/limitio"
+	"github.com/liamg/grabber/internal/safepath"
 	"github.com/liamg/grabber/protocols"
 	"github.com/liamg/grabber/settings"
 )
@@ -199,9 +200,9 @@ func (d *Downloader) Download(ctx context.Context, tmpDir string, s settings.Set
 
 	// If the key ends with "/" or is empty, treat as a directory listing.
 	if d.key == "" || strings.HasSuffix(d.key, "/") {
-		return false, d.downloadDir(ctx, client, tmpDir)
+		return false, d.downloadDir(ctx, client, tmpDir, s.MaxBytes)
 	}
-	return true, d.downloadFile(ctx, client, d.key, filepath.Join(tmpDir, filepath.Base(d.key)))
+	return true, d.downloadFile(ctx, client, d.key, filepath.Join(tmpDir, filepath.Base(d.key)), s.MaxBytes)
 }
 
 func (d *Downloader) resolveRegion(s settings.Settings) string {
@@ -246,7 +247,7 @@ func (d *Downloader) newClient(ctx context.Context, s settings.Settings) (*s3.Cl
 	}), nil
 }
 
-func (d *Downloader) downloadFile(ctx context.Context, client *s3.Client, key, dst string) error {
+func (d *Downloader) downloadFile(ctx context.Context, client *s3.Client, key, dst string, maxBytes int64) error {
 	resp, err := client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(d.bucket),
 		Key:    aws.String(key),
@@ -266,14 +267,14 @@ func (d *Downloader) downloadFile(ctx context.Context, client *s3.Client, key, d
 	}
 	defer f.Close()
 
-	if _, err := io.Copy(f, resp.Body); err != nil {
-		return err
+	if _, err := limitio.Copy(f, resp.Body, maxBytes); err != nil {
+		return fmt.Errorf("downloading object s3://%s/%s: %w", d.bucket, key, err)
 	}
 
 	return nil
 }
 
-func (d *Downloader) downloadDir(ctx context.Context, client *s3.Client, tmpDir string) error {
+func (d *Downloader) downloadDir(ctx context.Context, client *s3.Client, tmpDir string, maxBytes int64) error {
 	prefix := d.key
 	paginator := s3.NewListObjectsV2Paginator(client, &s3.ListObjectsV2Input{
 		Bucket: aws.String(d.bucket),
@@ -298,8 +299,13 @@ func (d *Downloader) downloadDir(ctx context.Context, client *s3.Client, tmpDir 
 				continue
 			}
 
-			fileDst := filepath.Join(tmpDir, relPath)
-			if err := d.downloadFile(ctx, client, *obj.Key, fileDst); err != nil {
+			// The key comes from the bucket listing, which an attacker may
+			// control; keep the write inside tmpDir.
+			fileDst, err := safepath.Join(tmpDir, relPath)
+			if err != nil {
+				return fmt.Errorf("object s3://%s/%s: %w", d.bucket, *obj.Key, err)
+			}
+			if err := d.downloadFile(ctx, client, *obj.Key, fileDst, maxBytes); err != nil {
 				return err
 			}
 		}

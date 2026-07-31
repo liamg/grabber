@@ -196,3 +196,17 @@ func TestProtocolProperties(t *testing.T) {
 		t.Errorf("Priority() = %d, want %d", p.Priority(), 80)
 	}
 }
+
+func TestDownload_RejectsLeadingDashHost(t *testing.T) {
+	// A host beginning with "-" could be read as an option by the hg subprocess
+	// (the -oProxyCommand argument-injection class); it must be refused before
+	// the clone runs. SSRF is disabled so the dash check is what rejects it.
+	d := &Downloader{repoURL: "ssh://-oProxyCommand=touch/evil"}
+	_, err := d.Download(context.Background(), t.TempDir(), settings.Settings{SSRFLevel: ssrf.None})
+	if err == nil {
+		t.Fatal("expected a leading-dash host to be rejected")
+	}
+	if !strings.Contains(err.Error(), "-") {
+		t.Errorf("expected an error about the '-' host, got %v", err)
+	}
+}

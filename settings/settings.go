@@ -15,9 +15,16 @@ import (
 	"github.com/liamg/grabber/ssrf"
 )
 
+// DefaultMaxBytes is the default ceiling on a single downloaded file and on the
+// total size of a single archive extraction. It is deliberately high - large
+// enough not to interfere with legitimate use - while still bounding a
+// decompression bomb or an unbounded response body.
+const DefaultMaxBytes int64 = 10 << 30 // 10 GiB
+
 var Defaults = Settings{
 	TemporaryDirectory: os.TempDir(),
 	EnableAutoExtract:  true,
+	MaxBytes:           DefaultMaxBytes,
 }
 
 type Settings struct {
@@ -119,6 +126,21 @@ type Settings struct {
 	// triggers the ssh<->https scheme fallback promptly. The probe is skipped
 	// when a proxy is configured for the host.
 	ConnectProbeTimeout time.Duration
+
+	// MaxBytes bounds the size of a single downloaded file and the total size of
+	// a single archive extraction, guarding against a decompression bomb or an
+	// unbounded response body exhausting the disk. Zero or negative means
+	// unlimited; the default (via Defaults) is DefaultMaxBytes. It does not apply
+	// to the OCI protocol, which pulls through oras's own client.
+	MaxBytes int64
+
+	// AllowedLocalDirs restricts the file:// protocol to these directories. When
+	// non-empty, a local source path is rejected unless, after resolving all
+	// symlinks, it lies within one of them. Empty (the default) imposes no
+	// restriction. Use it when grabber may be handed untrusted URLs, so a
+	// "file::/etc/passwd" (or a path that symlinks out of an allowed tree) cannot
+	// read arbitrary files.
+	AllowedLocalDirs []string
 }
 
 // CredentialRequestFunc resolves credentials dynamically for a request. It
@@ -487,6 +509,13 @@ func (s Settings) ProbeConnect(ctx context.Context, host, port string) error {
 		return nil
 	}
 	dialer := net.Dialer{Timeout: s.ConnectProbeTimeout}
+	// The probe is a real outbound connection, so it must honour the SSRF guard:
+	// without this it would reach (and reveal the reachability of) loopback,
+	// link-local and private addresses the guarded fetch itself refuses. The
+	// Control hook runs on the resolved IP, matching DialContext.
+	if guard := s.SSRFGuard(); guard.Enabled() && !guard.HostAllowed(host) {
+		dialer.Control = guard.Control
+	}
 	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(host, port))
 	if err != nil {
 		return fmt.Errorf("connect probe to %s failed: %w", net.JoinHostPort(host, port), err)

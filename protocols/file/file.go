@@ -76,6 +76,10 @@ type Downloader struct {
 var _ protocols.Downloadable = (*Downloader)(nil)
 
 func (d *Downloader) Download(ctx context.Context, tmpDir string, s settings.Settings) (bool, error) {
+	if err := checkAllowed(d.path, s.AllowedLocalDirs); err != nil {
+		return false, err
+	}
+
 	info, err := os.Stat(d.path)
 	if err != nil {
 		return false, fmt.Errorf("stat %s: %w", d.path, err)
@@ -87,6 +91,62 @@ func (d *Downloader) Download(ctx context.Context, tmpDir string, s settings.Set
 
 	dst := filepath.Join(tmpDir, filepath.Base(d.path))
 	return true, copyFile(d.path, dst)
+}
+
+// checkAllowed reports whether path is permitted by allowed. An empty allowed
+// list imposes no restriction. Otherwise path is fully resolved (following
+// every symlink) and must lie within - or equal - one of the allowed
+// directories, each itself resolved the same way. Resolving both sides is what
+// stops a symlink inside an allowed directory from pointing the copy out of it.
+func checkAllowed(path string, allowed []string) error {
+	if len(allowed) == 0 {
+		return nil
+	}
+
+	resolved, err := resolvePath(path)
+	if err != nil {
+		return fmt.Errorf("resolving %s: %w", path, err)
+	}
+
+	for _, dir := range allowed {
+		root, err := resolvePath(dir)
+		if err != nil {
+			continue // an unresolvable allowed dir simply matches nothing
+		}
+		if resolved == root || strings.HasPrefix(resolved, root+string(os.PathSeparator)) {
+			return nil
+		}
+	}
+	return fmt.Errorf("path %s is not within an allowed local directory", path)
+}
+
+// resolvePath returns an absolute path with all symlinks resolved. When the
+// path itself does not exist yet its deepest existing ancestor is resolved and
+// the remainder appended, so a not-yet-created target is still pinned to a real
+// location and cannot be smuggled through a symlinked parent.
+func resolvePath(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return resolved, nil
+	}
+	// Walk up to the first ancestor that exists and resolve that, then re-append
+	// the trailing components that do not exist yet.
+	dir := abs
+	var rest []string
+	for {
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return abs, nil // reached the root without finding an existing ancestor
+		}
+		rest = append([]string{filepath.Base(dir)}, rest...)
+		if resolved, err := filepath.EvalSymlinks(parent); err == nil {
+			return filepath.Join(append([]string{resolved}, rest...)...), nil
+		}
+		dir = parent
+	}
 }
 
 func copyDir(src, dst string) error {

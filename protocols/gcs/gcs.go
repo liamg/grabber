@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -16,6 +15,8 @@ import (
 	"google.golang.org/api/option"
 	"google.golang.org/api/storage/v1"
 
+	"github.com/liamg/grabber/internal/limitio"
+	"github.com/liamg/grabber/internal/safepath"
 	"github.com/liamg/grabber/protocols"
 	"github.com/liamg/grabber/settings"
 )
@@ -140,9 +141,9 @@ func (d *Downloader) Download(ctx context.Context, tmpDir string, s settings.Set
 
 	// If the key ends with "/" or is empty, treat as a directory listing.
 	if d.key == "" || strings.HasSuffix(d.key, "/") {
-		return false, d.downloadDir(ctx, svc, tmpDir)
+		return false, d.downloadDir(ctx, svc, tmpDir, s.MaxBytes)
 	}
-	return true, d.downloadFile(ctx, svc, d.key, filepath.Join(tmpDir, filepath.Base(d.key)))
+	return true, d.downloadFile(ctx, svc, d.key, filepath.Join(tmpDir, filepath.Base(d.key)), s.MaxBytes)
 }
 
 func (d *Downloader) newService(ctx context.Context, s settings.Settings) (*storage.Service, error) {
@@ -184,7 +185,7 @@ func (d *Downloader) newService(ctx context.Context, s settings.Settings) (*stor
 	return storage.NewService(ctx, opts...)
 }
 
-func (d *Downloader) downloadFile(ctx context.Context, svc *storage.Service, key, dst string) error {
+func (d *Downloader) downloadFile(ctx context.Context, svc *storage.Service, key, dst string, maxBytes int64) error {
 	resp, err := svc.Objects.Get(d.bucket, key).Context(ctx).Download()
 	if err != nil {
 		return fmt.Errorf("getting object gs://%s/%s: %w", d.bucket, key, err)
@@ -201,14 +202,14 @@ func (d *Downloader) downloadFile(ctx context.Context, svc *storage.Service, key
 	}
 	defer f.Close()
 
-	if _, err := io.Copy(f, resp.Body); err != nil {
-		return err
+	if _, err := limitio.Copy(f, resp.Body, maxBytes); err != nil {
+		return fmt.Errorf("downloading object gs://%s/%s: %w", d.bucket, key, err)
 	}
 
 	return nil
 }
 
-func (d *Downloader) downloadDir(ctx context.Context, svc *storage.Service, tmpDir string) error {
+func (d *Downloader) downloadDir(ctx context.Context, svc *storage.Service, tmpDir string, maxBytes int64) error {
 	prefix := d.key
 	pageToken := ""
 
@@ -229,8 +230,13 @@ func (d *Downloader) downloadDir(ctx context.Context, svc *storage.Service, tmpD
 				continue
 			}
 
-			fileDst := filepath.Join(tmpDir, relPath)
-			if err := d.downloadFile(ctx, svc, obj.Name, fileDst); err != nil {
+			// The object name comes from the listing, which an attacker may
+			// control; keep the write inside tmpDir.
+			fileDst, err := safepath.Join(tmpDir, relPath)
+			if err != nil {
+				return fmt.Errorf("object gs://%s/%s: %w", d.bucket, obj.Name, err)
+			}
+			if err := d.downloadFile(ctx, svc, obj.Name, fileDst, maxBytes); err != nil {
 				return err
 			}
 		}

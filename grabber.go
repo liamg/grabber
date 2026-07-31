@@ -122,7 +122,7 @@ func (g *Grabber) grab(ctx context.Context, rawURL, dst string, explicit checksu
 		}
 		archive := filepath.Join(tmpDir, entries[0].Name())
 		extractDir := filepath.Join(tmpDir, "_extracted")
-		if extracted, err := extract.Extract(archive, extractDir); err != nil {
+		if extracted, err := extract.ExtractWithLimit(archive, extractDir, g.settings.MaxBytes); err != nil {
 			return fmt.Errorf("extracting archive: %w", err)
 		} else if extracted {
 			// Replace tmpDir contents with extracted contents.

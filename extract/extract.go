@@ -16,37 +16,52 @@ import (
 	"github.com/ulikunitz/xz"
 )
 
-// Extract extracts the archive at src into the dst directory.
+// Extract extracts the archive at src into the dst directory with no size limit.
 // It detects the archive type by file extension.
 // Returns true if the file was extracted, false if the format is not recognised.
 func Extract(src, dst string) (bool, error) {
+	return ExtractWithLimit(src, dst, 0)
+}
+
+// ExtractWithLimit is Extract with a ceiling on the total number of bytes
+// written across all entries, guarding against a decompression bomb. A maxBytes
+// of 0 or less means unlimited.
+func ExtractWithLimit(src, dst string, maxBytes int64) (bool, error) {
 	ext := detectExtension(src)
 	fn, ok := extractors[ext]
 	if !ok {
 		return false, nil
 	}
-	return true, fn(src, dst)
+	e := &extractor{remaining: maxBytes, limited: maxBytes > 0}
+	return true, fn(e, src, dst)
 }
 
-type extractFunc func(src, dst string) error
+// extractor carries the per-extraction size budget. remaining counts down as
+// entries are written; when limited is false the budget is ignored.
+type extractor struct {
+	remaining int64
+	limited   bool
+}
+
+type extractFunc func(e *extractor, src, dst string) error
 
 var extractors = map[string]extractFunc{
-	"tar":     extractTar,
-	"tar.gz":  extractTarGzip,
-	"tgz":     extractTarGzip,
-	"tar.bz2": extractTarBzip2,
-	"tbz2":    extractTarBzip2,
-	"tar.xz":  extractTarXz,
-	"txz":     extractTarXz,
-	"tar.zst": extractTarZstd,
-	"tzst":    extractTarZstd,
-	"tar.lz4": extractTarLz4,
-	"zip":     extractZip,
-	"gz":      extractGzip,
-	"bz2":     extractBzip2,
-	"xz":      extractXz,
-	"zst":     extractZstd,
-	"lz4":     extractLz4,
+	"tar":     (*extractor).extractTar,
+	"tar.gz":  (*extractor).extractTarGzip,
+	"tgz":     (*extractor).extractTarGzip,
+	"tar.bz2": (*extractor).extractTarBzip2,
+	"tbz2":    (*extractor).extractTarBzip2,
+	"tar.xz":  (*extractor).extractTarXz,
+	"txz":     (*extractor).extractTarXz,
+	"tar.zst": (*extractor).extractTarZstd,
+	"tzst":    (*extractor).extractTarZstd,
+	"tar.lz4": (*extractor).extractTarLz4,
+	"zip":     (*extractor).extractZip,
+	"gz":      (*extractor).extractGzip,
+	"bz2":     (*extractor).extractBzip2,
+	"xz":      (*extractor).extractXz,
+	"zst":     (*extractor).extractZstd,
+	"lz4":     (*extractor).extractLz4,
 }
 
 // detectExtension returns the archive extension of the filename.
@@ -65,16 +80,16 @@ func detectExtension(name string) string {
 
 // --- tar helpers ---
 
-func extractTar(src, dst string) error {
+func (e *extractor) extractTar(src, dst string) error {
 	f, err := os.Open(src)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	return untar(f, dst)
+	return e.untar(f, dst)
 }
 
-func extractTarGzip(src, dst string) error {
+func (e *extractor) extractTarGzip(src, dst string) error {
 	f, err := os.Open(src)
 	if err != nil {
 		return err
@@ -87,20 +102,20 @@ func extractTarGzip(src, dst string) error {
 	}
 	defer gr.Close()
 
-	return untar(gr, dst)
+	return e.untar(gr, dst)
 }
 
-func extractTarBzip2(src, dst string) error {
+func (e *extractor) extractTarBzip2(src, dst string) error {
 	f, err := os.Open(src)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 
-	return untar(bzip2.NewReader(f), dst)
+	return e.untar(bzip2.NewReader(f), dst)
 }
 
-func extractTarXz(src, dst string) error {
+func (e *extractor) extractTarXz(src, dst string) error {
 	f, err := os.Open(src)
 	if err != nil {
 		return err
@@ -112,10 +127,10 @@ func extractTarXz(src, dst string) error {
 		return err
 	}
 
-	return untar(xr, dst)
+	return e.untar(xr, dst)
 }
 
-func extractTarZstd(src, dst string) error {
+func (e *extractor) extractTarZstd(src, dst string) error {
 	f, err := os.Open(src)
 	if err != nil {
 		return err
@@ -128,20 +143,20 @@ func extractTarZstd(src, dst string) error {
 	}
 	defer zr.Close()
 
-	return untar(zr, dst)
+	return e.untar(zr, dst)
 }
 
-func extractTarLz4(src, dst string) error {
+func (e *extractor) extractTarLz4(src, dst string) error {
 	f, err := os.Open(src)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 
-	return untar(lz4.NewReader(f), dst)
+	return e.untar(lz4.NewReader(f), dst)
 }
 
-func untar(r io.Reader, dst string) error {
+func (e *extractor) untar(r io.Reader, dst string) error {
 	tr := tar.NewReader(r)
 	for {
 		header, err := tr.Next()
@@ -161,14 +176,14 @@ func untar(r io.Reader, dst string) error {
 
 		switch header.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(target, os.FileMode(header.Mode)); err != nil {
+			if err := os.MkdirAll(target, safeMode(header.FileInfo().Mode())); err != nil {
 				return err
 			}
 		case tar.TypeReg:
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return err
 			}
-			if err := writeFile(target, tr, os.FileMode(header.Mode)); err != nil {
+			if err := e.writeFile(target, tr, safeMode(header.FileInfo().Mode())); err != nil {
 				return err
 			}
 		}
@@ -178,7 +193,7 @@ func untar(r io.Reader, dst string) error {
 
 // --- zip ---
 
-func extractZip(src, dst string) error {
+func (e *extractor) extractZip(src, dst string) error {
 	zr, err := zip.OpenReader(src)
 	if err != nil {
 		return err
@@ -194,7 +209,7 @@ func extractZip(src, dst string) error {
 		}
 
 		if f.FileInfo().IsDir() {
-			if err := os.MkdirAll(target, f.Mode()); err != nil {
+			if err := os.MkdirAll(target, safeMode(f.Mode())); err != nil {
 				return err
 			}
 			continue
@@ -209,7 +224,7 @@ func extractZip(src, dst string) error {
 			return err
 		}
 
-		err = writeFile(target, rc, f.Mode())
+		err = e.writeFile(target, rc, safeMode(f.Mode()))
 		rc.Close()
 		if err != nil {
 			return err
@@ -220,7 +235,7 @@ func extractZip(src, dst string) error {
 
 // --- single-file decompressors ---
 
-func extractGzip(src, dst string) error {
+func (e *extractor) extractGzip(src, dst string) error {
 	f, err := os.Open(src)
 	if err != nil {
 		return err
@@ -234,10 +249,10 @@ func extractGzip(src, dst string) error {
 	defer gr.Close()
 
 	outName := strings.TrimSuffix(filepath.Base(src), ".gz")
-	return writeFile(filepath.Join(dst, outName), gr, 0o644)
+	return e.writeFile(filepath.Join(dst, outName), gr, 0o644)
 }
 
-func extractBzip2(src, dst string) error {
+func (e *extractor) extractBzip2(src, dst string) error {
 	f, err := os.Open(src)
 	if err != nil {
 		return err
@@ -245,10 +260,10 @@ func extractBzip2(src, dst string) error {
 	defer f.Close()
 
 	outName := strings.TrimSuffix(filepath.Base(src), ".bz2")
-	return writeFile(filepath.Join(dst, outName), bzip2.NewReader(f), 0o644)
+	return e.writeFile(filepath.Join(dst, outName), bzip2.NewReader(f), 0o644)
 }
 
-func extractXz(src, dst string) error {
+func (e *extractor) extractXz(src, dst string) error {
 	f, err := os.Open(src)
 	if err != nil {
 		return err
@@ -261,10 +276,10 @@ func extractXz(src, dst string) error {
 	}
 
 	outName := strings.TrimSuffix(filepath.Base(src), ".xz")
-	return writeFile(filepath.Join(dst, outName), xr, 0o644)
+	return e.writeFile(filepath.Join(dst, outName), xr, 0o644)
 }
 
-func extractZstd(src, dst string) error {
+func (e *extractor) extractZstd(src, dst string) error {
 	f, err := os.Open(src)
 	if err != nil {
 		return err
@@ -278,10 +293,10 @@ func extractZstd(src, dst string) error {
 	defer zr.Close()
 
 	outName := strings.TrimSuffix(filepath.Base(src), ".zst")
-	return writeFile(filepath.Join(dst, outName), zr, 0o644)
+	return e.writeFile(filepath.Join(dst, outName), zr, 0o644)
 }
 
-func extractLz4(src, dst string) error {
+func (e *extractor) extractLz4(src, dst string) error {
 	f, err := os.Open(src)
 	if err != nil {
 		return err
@@ -289,18 +304,41 @@ func extractLz4(src, dst string) error {
 	defer f.Close()
 
 	outName := strings.TrimSuffix(filepath.Base(src), ".lz4")
-	return writeFile(filepath.Join(dst, outName), lz4.NewReader(f), 0o644)
+	return e.writeFile(filepath.Join(dst, outName), lz4.NewReader(f), 0o644)
 }
 
 // --- helpers ---
 
-func writeFile(path string, r io.Reader, mode os.FileMode) error {
+// writeFile writes r to path, counting the bytes against the extraction budget
+// so the archive as a whole cannot exceed it.
+func (e *extractor) writeFile(path string, r io.Reader, mode os.FileMode) error {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
 
-	_, err = io.Copy(f, r)
-	return err
+	if !e.limited {
+		_, err = io.Copy(f, r)
+		return err
+	}
+
+	// Read one past the remaining budget so an entry that would exhaust it is
+	// detected even when remaining has reached exactly zero.
+	n, err := io.Copy(f, io.LimitReader(r, e.remaining+1))
+	if err != nil {
+		return err
+	}
+	if n > e.remaining {
+		return fmt.Errorf("archive exceeds maximum extraction size")
+	}
+	e.remaining -= n
+	return nil
+}
+
+// safeMode strips the setuid, setgid and sticky bits from a mode carried in an
+// archive, so an untrusted archive cannot land a setuid/setgid file on disk. It
+// keeps only the permission bits (rwx for user/group/other).
+func safeMode(mode os.FileMode) os.FileMode {
+	return mode.Perm()
 }
