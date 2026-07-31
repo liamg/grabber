@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -13,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/liamg/grabber/internal/limitio"
 	"github.com/liamg/grabber/internal/netrc"
 	"github.com/liamg/grabber/protocols"
 	"github.com/liamg/grabber/settings"
@@ -195,8 +195,8 @@ func (d *Downloader) Download(ctx context.Context, tmpDir string, s settings.Set
 	}
 	defer f.Close()
 
-	if _, err := io.Copy(f, resp.Body); err != nil {
-		return false, fmt.Errorf("writing file: %w", err)
+	if _, err := limitio.Copy(f, resp.Body, s.MaxBytes); err != nil {
+		return false, fmt.Errorf("downloading %s: %w", d.url, err)
 	}
 
 	return true, nil

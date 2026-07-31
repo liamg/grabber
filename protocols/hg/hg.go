@@ -126,8 +126,14 @@ func (d *Downloader) Download(ctx context.Context, tmpDir string, s settings.Set
 	}
 
 	// hg dials in a subprocess (not through our transport), so apply the SSRF
-	// guard as a pre-fetch check on the repo host.
+	// guard as a pre-fetch check on the repo host. Also reject a URL whose host
+	// begins with "-": passed to the hg subprocess it could be read as an option
+	// (the ssh transport's -oProxyCommand argument-injection class), and we rely
+	// on hg's own protections for nothing.
 	if u, err := url.Parse(d.repoURL); err == nil {
+		if strings.HasPrefix(u.Hostname(), "-") {
+			return false, fmt.Errorf("refusing to clone from a URL whose host begins with '-': %q", d.repoURL)
+		}
 		if err := s.CheckSSRFHost(ctx, u.Hostname()); err != nil {
 			return false, err
 		}
@@ -146,7 +152,9 @@ func (d *Downloader) Download(ctx context.Context, tmpDir string, s settings.Set
 	if d.rev != "" {
 		args = append(args, "--rev", d.rev)
 	}
-	args = append(args, d.repoURL, cloneDir)
+	// "--" ends option parsing, so neither the URL nor the destination can be
+	// read as a flag even if it begins with "-".
+	args = append(args, "--", d.repoURL, cloneDir)
 
 	cmd := exec.CommandContext(ctx, "hg", args...)
 	cmd.Env = os.Environ()

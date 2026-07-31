@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"testing"
 	"time"
+
+	"github.com/liamg/grabber/ssrf"
 )
 
 func TestProbeConnect(t *testing.T) {
@@ -27,17 +29,28 @@ func TestProbeConnect(t *testing.T) {
 	})
 
 	t.Run("reachable host passes", func(t *testing.T) {
-		s := Settings{ConnectProbeTimeout: 2 * time.Second}
+		// The listener is on loopback, which the default SSRF guard blocks, so
+		// disable the guard for the reachability check itself.
+		s := Settings{ConnectProbeTimeout: 2 * time.Second, SSRFLevel: ssrf.None}
 		if err := s.ProbeConnect(ctx, host, port); err != nil {
 			t.Errorf("expected reachable host to pass, got %v", err)
 		}
 	})
 
 	t.Run("unreachable host fails", func(t *testing.T) {
-		s := Settings{ConnectProbeTimeout: 500 * time.Millisecond}
+		s := Settings{ConnectProbeTimeout: 500 * time.Millisecond, SSRFLevel: ssrf.None}
 		// Port 1 on loopback is (almost certainly) closed → connection refused.
 		if err := s.ProbeConnect(ctx, "127.0.0.1", "1"); err == nil {
 			t.Error("expected an error for an unreachable port")
+		}
+	})
+
+	t.Run("SSRF guard blocks a loopback probe", func(t *testing.T) {
+		// With the guard on (the default), the probe must refuse loopback rather
+		// than reveal whether the port is open.
+		s := Settings{ConnectProbeTimeout: 500 * time.Millisecond}
+		if err := s.ProbeConnect(ctx, host, port); err == nil {
+			t.Error("expected the SSRF guard to block a loopback probe")
 		}
 	})
 

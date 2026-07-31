@@ -286,7 +286,7 @@ func TestExtractArchive(t *testing.T) {
 
 	t.Run("full extract strips top-level dir", func(t *testing.T) {
 		dst := t.TempDir()
-		if err := extractArchive(gunzip(t, archive), dst, ""); err != nil {
+		if err := extractArchive(gunzip(t, archive), dst, "", 0); err != nil {
 			t.Fatalf("extractArchive: %v", err)
 		}
 		assertFileContains(t, filepath.Join(dst, "file.txt"), "hello")
@@ -298,7 +298,7 @@ func TestExtractArchive(t *testing.T) {
 	// two are interchangeable. Root-level files come too, per cone mode.
 	t.Run("subdir extract keeps the repository layout", func(t *testing.T) {
 		dst := t.TempDir()
-		if err := extractArchive(gunzip(t, archive), dst, "sub"); err != nil {
+		if err := extractArchive(gunzip(t, archive), dst, "sub", 0); err != nil {
 			t.Fatalf("extractArchive: %v", err)
 		}
 		assertFileContains(t, filepath.Join(dst, "sub", "inner.txt"), "inner")
@@ -308,7 +308,7 @@ func TestExtractArchive(t *testing.T) {
 
 	t.Run("missing subdir errors", func(t *testing.T) {
 		dst := t.TempDir()
-		if err := extractArchive(gunzip(t, archive), dst, "nope"); err == nil {
+		if err := extractArchive(gunzip(t, archive), dst, "nope", 0); err == nil {
 			t.Fatal("expected error for missing subdir")
 		}
 	})
@@ -345,7 +345,7 @@ func TestExtractArchive_RejectsDotDot(t *testing.T) {
 	gz.Close()
 
 	dst := t.TempDir()
-	if err := extractArchive(gunzip(t, buf.Bytes()), dst, ""); err == nil {
+	if err := extractArchive(gunzip(t, buf.Bytes()), dst, "", 0); err == nil {
 		t.Fatal("expected error for '..' in archive entry")
 	}
 }
