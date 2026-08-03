@@ -1,10 +1,44 @@
 package git
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"testing"
+
+	gogit "github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/plumbing/transport"
 
 	"github.com/liamg/grabber/settings"
 )
+
+func TestDefinitiveCloneError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		// Answers the scheme fallback cannot change.
+		{"missing ref", fmt.Errorf("cloning repo: %w: refs/tags/master", gogit.ErrRemoteRefNotFound), true},
+		{"empty repository", fmt.Errorf("cloning repo: %w", transport.ErrEmptyRemoteRepository), true},
+		{"context canceled", fmt.Errorf("cloning repo: %w", context.Canceled), true},
+		{"context deadline", fmt.Errorf("cloning repo: %w", context.DeadlineExceeded), true},
+		// Failures the fallback exists for: hosts hide private repositories
+		// behind auth/not-found, and the other scheme may authenticate.
+		{"repository not found", fmt.Errorf("cloning repo: %w", transport.ErrRepositoryNotFound), false},
+		{"authentication required", fmt.Errorf("cloning repo: %w", transport.ErrAuthenticationRequired), false},
+		{"authorization failed", fmt.Errorf("cloning repo: %w", transport.ErrAuthorizationFailed), false},
+		{"transport-specific failure", errors.New("unable to find any valid known_hosts file"), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := definitiveCloneError(tt.err); got != tt.want {
+				t.Errorf("definitiveCloneError(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
 
 func TestCloneCandidates(t *testing.T) {
 	withKey := settings.Settings{Git: settings.GitConfig{

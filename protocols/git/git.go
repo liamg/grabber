@@ -21,6 +21,7 @@ import (
 	"github.com/go-git/go-git/v6"
 	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/go-git/go-git/v6/plumbing/client"
+	"github.com/go-git/go-git/v6/plumbing/transport"
 	"github.com/go-git/go-git/v6/plumbing/transport/http"
 	"github.com/go-git/go-git/v6/plumbing/transport/ssh"
 	cryptossh "golang.org/x/crypto/ssh"
@@ -263,6 +264,13 @@ func (d *Downloader) Download(ctx context.Context, tmpDir string, s settings.Set
 		attempt.repoURL = cand
 		if err := attempt.gitDownload(ctx, tmpDir, s); err != nil {
 			errs = append(errs, err)
+			// A definitive answer from the remote (the ref does not exist, the
+			// repository is empty) is the same over every transport, so the
+			// scheme fallback cannot change it — its failure would only bury
+			// the real error under unrelated auth noise.
+			if definitiveCloneError(err) {
+				break
+			}
 			continue
 		}
 		return false, nil
@@ -271,7 +279,7 @@ func (d *Downloader) Download(ctx context.Context, tmpDir string, s settings.Set
 	// If git could not retrieve a commit hash, fall back to the hosting
 	// platform's HTTP archive endpoint. This handles orphaned commits that are
 	// unreachable via the git protocol but still downloadable via the API.
-	if looksLikeCommitHash(d.ref) {
+	if looksLikeCommitHash(d.ref) && ctx.Err() == nil {
 		if cleanErr := resetDir(tmpDir); cleanErr != nil {
 			return false, errors.Join(append(errs, cleanErr)...)
 		}
@@ -282,6 +290,19 @@ func (d *Downloader) Download(ctx context.Context, tmpDir string, s settings.Set
 	}
 
 	return false, errors.Join(errs...)
+}
+
+// definitiveCloneError reports whether err is an answer no retry can change:
+// the remote was reached and said the ref does not exist or the repository is
+// empty (true over every transport, so the scheme fallback cannot help), or the
+// context is done (so no further attempt can run anyway). Auth and not-found
+// errors are deliberately absent — hosts hide private repositories behind both,
+// and authenticating over the other scheme is exactly what the fallback is for.
+func definitiveCloneError(err error) bool {
+	return errors.Is(err, git.ErrRemoteRefNotFound) ||
+		errors.Is(err, transport.ErrEmptyRemoteRepository) ||
+		errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded)
 }
 
 // cloneCandidates returns the ordered list of repo URLs to try. The URL is
@@ -400,16 +421,7 @@ func (d *Downloader) gitDownload(ctx context.Context, tmpDir string, s settings.
 
 	cloneDir := tmpDir
 
-	var repo *git.Repository
-	for _, attempt := range d.cloneAttempts() {
-		os.RemoveAll(cloneDir)
-		cloneOpts.ReferenceName = attempt.refName
-		cloneOpts.SingleBranch = attempt.singleBranch
-		repo, err = git.PlainCloneContext(ctx, cloneDir, cloneOpts)
-		if err == nil {
-			break
-		}
-	}
+	repo, err := cloneByAttempts(ctx, cloneDir, cloneOpts, d.cloneAttempts(), d.ref)
 	if err != nil {
 		return fmt.Errorf("cloning repo: %w", err)
 	}
@@ -458,6 +470,37 @@ func (d *Downloader) gitDownload(ctx context.Context, tmpDir string, s settings.
 type cloneAttempt struct {
 	refName      plumbing.ReferenceName
 	singleBranch bool
+}
+
+// cloneByAttempts clones at the first of the ordered reference candidates that
+// exists on the remote. Only a missing ref moves on to the next spelling; any
+// other failure (auth, transport, protocol) would fail identically for every
+// spelling, so it is returned immediately. When every spelling is missing, the
+// error names the ref the caller pinned rather than the internal spelling of
+// whichever attempt happened to run last ("refs/tags/master" for ref=master).
+func cloneByAttempts(ctx context.Context, cloneDir string, cloneOpts *git.CloneOptions, attempts []cloneAttempt, ref string) (*git.Repository, error) {
+	var err error
+	for _, attempt := range attempts {
+		_ = os.RemoveAll(cloneDir)
+		cloneOpts.ReferenceName = attempt.refName
+		cloneOpts.SingleBranch = attempt.singleBranch
+		var repo *git.Repository
+		repo, err = git.PlainCloneContext(ctx, cloneDir, cloneOpts)
+		if err == nil {
+			return repo, nil
+		}
+		if !errors.Is(err, git.ErrRemoteRefNotFound) {
+			return nil, err
+		}
+	}
+	if len(attempts) > 1 {
+		names := make([]string, len(attempts))
+		for i, attempt := range attempts {
+			names[i] = attempt.refName.String()
+		}
+		return nil, fmt.Errorf("%w %q (tried %s)", git.ErrRemoteRefNotFound, ref, strings.Join(names, ", "))
+	}
+	return nil, err
 }
 
 // cloneAttempts returns the ordered reference candidates to try for this
