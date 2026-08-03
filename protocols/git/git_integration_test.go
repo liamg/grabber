@@ -2,8 +2,10 @@ package git
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -407,6 +409,34 @@ func TestDownload_NonexistentRef(t *testing.T) {
 	_, err := d.Download(context.Background(), dst, settings.Settings{})
 	if err == nil {
 		t.Fatal("expected error for nonexistent ref")
+	}
+	if !errors.Is(err, gogit.ErrRemoteRefNotFound) {
+		t.Fatalf("expected ErrRemoteRefNotFound, got: %v", err)
+	}
+	// The error should name the ref the caller pinned, not the internal
+	// spelling of the last attempt (refs/tags/nonexistent-branch).
+	if !strings.Contains(err.Error(), `"nonexistent-branch"`) {
+		t.Errorf("error should name the pinned ref, got: %v", err)
+	}
+}
+
+func TestDownload_NonexistentRef_SparsePath(t *testing.T) {
+	bareRepo := createBareRepo(t)
+	dst := t.TempDir()
+
+	// A subdir makes the download sparse-eligible. A missing ref is definitive:
+	// it must surface as-is, not as a sparse-unsupported error that triggers a
+	// full clone destined to fail the same way.
+	d := &Downloader{repoURL: bareRepo, ref: "nonexistent-branch", subdir: "sub"}
+	_, err := d.Download(context.Background(), dst, settings.Settings{})
+	if err == nil {
+		t.Fatal("expected error for nonexistent ref")
+	}
+	if !errors.Is(err, gogit.ErrRemoteRefNotFound) {
+		t.Fatalf("expected ErrRemoteRefNotFound, got: %v", err)
+	}
+	if strings.Contains(err.Error(), errSparseUnsupported.Error()) {
+		t.Errorf("missing ref should not be reported as a sparse-checkout problem, got: %v", err)
 	}
 }
 

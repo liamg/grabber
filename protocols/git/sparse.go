@@ -119,18 +119,14 @@ func (d *Downloader) sparseClone(ctx context.Context, cloneDir string, s setting
 		cloneOpts.Depth = depth
 	}
 
-	var (
-		repo *git.Repository
-		err  error
-	)
-	for _, attempt := range attempts {
-		_ = os.RemoveAll(cloneDir)
-		cloneOpts.ReferenceName = attempt.refName
-		cloneOpts.SingleBranch = attempt.singleBranch
-		repo, err = git.PlainCloneContext(ctx, cloneDir, cloneOpts)
-		if err == nil {
-			return repo, nil
-		}
+	repo, err := cloneByAttempts(ctx, cloneDir, cloneOpts, attempts, d.ref)
+	if err == nil {
+		return repo, nil
+	}
+	// A missing ref or an empty repository would fail a full clone just as
+	// surely, so return those as-is rather than burning a second clone.
+	if definitiveCloneError(err) {
+		return nil, err
 	}
 	// A remote that rejects the filter (or does not advertise protocol v2) fails
 	// here; a full clone may still succeed.
