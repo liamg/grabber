@@ -9,17 +9,21 @@ import (
 
 func TestBlocked(t *testing.T) {
 	ips := map[string]net.IP{
-		"loopback v4":   net.ParseIP("127.0.0.1"),
-		"loopback v6":   net.ParseIP("::1"),
-		"private 10":    net.ParseIP("10.0.0.5"),
-		"private 172":   net.ParseIP("172.16.3.4"),
-		"private 192":   net.ParseIP("192.168.1.1"),
-		"link-local":    net.ParseIP("169.254.169.254"), // cloud metadata
-		"ula v6":        net.ParseIP("fd00::1"),
-		"unspecified":   net.ParseIP("0.0.0.0"),
-		"public v4":     net.ParseIP("8.8.8.8"),
-		"public v6":     net.ParseIP("2001:4860:4860::8888"),
-		"public routed": net.ParseIP("1.1.1.1"),
+		"loopback v4":    net.ParseIP("127.0.0.1"),
+		"loopback v6":    net.ParseIP("::1"),
+		"private 10":     net.ParseIP("10.0.0.5"),
+		"private 172":    net.ParseIP("172.16.3.4"),
+		"private 192":    net.ParseIP("192.168.1.1"),
+		"link-local":     net.ParseIP("169.254.169.254"), // cloud metadata
+		"ula v6":         net.ParseIP("fd00::1"),
+		"unspecified":    net.ParseIP("0.0.0.0"),
+		"cgnat low":      net.ParseIP("100.64.0.1"),
+		"cgnat high":     net.ParseIP("100.127.255.254"),
+		"public v4":      net.ParseIP("8.8.8.8"),
+		"public v6":      net.ParseIP("2001:4860:4860::8888"),
+		"public routed":  net.ParseIP("1.1.1.1"),
+		"public 100.63":  net.ParseIP("100.63.255.255"), // just below CGNAT
+		"public 100.128": net.ParseIP("100.128.0.1"),    // just above CGNAT
 	}
 
 	tests := []struct {
@@ -31,10 +35,12 @@ func TestBlocked(t *testing.T) {
 		{Internal, []string{
 			"loopback v4", "loopback v6", "private 10", "private 172",
 			"private 192", "link-local", "ula v6", "unspecified",
+			"cgnat low", "cgnat high",
 		}},
 		{Default, []string{ // resolves to Internal
 			"loopback v4", "loopback v6", "private 10", "private 172",
 			"private 192", "link-local", "ula v6", "unspecified",
+			"cgnat low", "cgnat high",
 		}},
 	}
 
@@ -123,9 +129,37 @@ func TestCheckHost(t *testing.T) {
 		}
 	})
 
-	t.Run("unresolvable host allowed (nothing to block)", func(t *testing.T) {
-		if err := g.CheckHost(ctx, "nonexistent.grabber.invalid"); err != nil {
-			t.Errorf("expected unresolvable host to pass, got %v", err)
+	t.Run("unresolvable host fails closed", func(t *testing.T) {
+		// The fetch behind CheckHost may resolve with libc (subprocess
+		// getters), which accepts inputs the pure-Go resolver does not, so a
+		// failed lookup must block rather than allow.
+		if err := g.CheckHost(ctx, "nonexistent.grabber.invalid"); err == nil {
+			t.Error("expected unresolvable host to be rejected (fail closed)")
+		}
+	})
+
+	t.Run("non-canonical IP literals rejected", func(t *testing.T) {
+		// inet_aton decodes all of these to 127.0.0.1, but net.ParseIP and
+		// the pure-Go resolver reject them — previously a fail-open bypass
+		// for getters that shell out.
+		for _, host := range []string{"0177.0.0.1", "0x7f.0.0.1", "2130706433", "127.1", "0x7f000001"} {
+			if err := g.CheckHost(ctx, host); err == nil {
+				t.Errorf("expected non-canonical literal %q to be rejected", host)
+			}
+		}
+	})
+
+	t.Run("allowlisted non-canonical literal permitted", func(t *testing.T) {
+		if err := New(Internal, nil, "0177.0.0.1").CheckHost(ctx, "0177.0.0.1"); err != nil {
+			t.Errorf("expected allowlisted literal to pass, got %v", err)
+		}
+	})
+
+	t.Run("cgnat host blocked", func(t *testing.T) {
+		err := g.CheckHost(ctx, "100.64.12.34")
+		var blocked *BlockedAddressError
+		if !errors.As(err, &blocked) {
+			t.Fatalf("expected CGNAT address to be blocked, got %v", err)
 		}
 	})
 

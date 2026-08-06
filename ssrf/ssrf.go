@@ -36,9 +36,9 @@ const (
 	// Loopback blocks only loopback (127.0.0.0/8, ::1) and the unspecified
 	// address (0.0.0.0, ::).
 	Loopback
-	// Internal blocks loopback, RFC1918 private ranges, IPv6 ULA, link-local
-	// (including the 169.254.169.254 metadata endpoint), multicast, and the
-	// unspecified address.
+	// Internal blocks loopback, RFC1918 private ranges, CGNAT (100.64.0.0/10),
+	// IPv6 ULA, link-local (including the 169.254.169.254 metadata endpoint),
+	// multicast, and the unspecified address.
 	Internal
 	// Custom delegates the decision to a caller-supplied predicate.
 	Custom
@@ -123,6 +123,11 @@ func (g *Guard) Enabled() bool {
 	return g != nil && g.level != None
 }
 
+// cgnat is 100.64.0.0/10 (RFC 6598, carrier-grade NAT). Go's IsPrivate does
+// not include it, but it is only reachable inside a provider network —
+// Tailscale tailnets and EKS/GKE secondary pod CIDRs live here.
+var cgnat = &net.IPNet{IP: net.IPv4(100, 64, 0, 0).To4(), Mask: net.CIDRMask(10, 32)}
+
 // Blocked reports whether ip must not be dialed. A nil IP is treated as blocked
 // so the guard fails closed.
 func (g *Guard) Blocked(ip net.IP) bool {
@@ -147,6 +152,7 @@ func (g *Guard) Blocked(ip net.IP) bool {
 	case Internal:
 		return ip.IsLoopback() || // 127.0.0.0/8, ::1
 			ip.IsPrivate() || // 10/8, 172.16/12, 192.168/16, fc00::/7
+			cgnat.Contains(ip) || // 100.64.0.0/10 (RFC 6598, CGNAT)
 			ip.IsLinkLocalUnicast() || // 169.254.0.0/16 (metadata), fe80::/10
 			ip.IsLinkLocalMulticast() ||
 			ip.IsInterfaceLocalMulticast() ||
@@ -174,8 +180,13 @@ func (e *BlockedAddressError) Error() string {
 // BlockedAddressError if it — or every address it resolves to — is blocked. A
 // host that also resolves to at least one allowed address is permitted (the
 // dialer guard still rejects any blocked address it is later asked to dial, and
-// this avoids false positives on split-horizon DNS). A DNS failure returns nil:
-// there is nothing to safely block, and the fetch fails on its own.
+// this avoids false positives on split-horizon DNS).
+//
+// CheckHost fails closed on anything it cannot resolve itself: the protocols
+// behind it fetch through their own transport or a subprocess, whose resolver
+// (libc) accepts inputs the pure-Go path does not — non-canonical IPv4
+// literals via inet_aton, plus nsswitch sources like mDNS — so "we couldn't
+// resolve it" is not proof the fetch can't reach a blocked address.
 func (g *Guard) CheckHost(ctx context.Context, host string) error {
 	if !g.Enabled() || host == "" || g.hostAllowed(host) {
 		return nil
@@ -188,9 +199,18 @@ func (g *Guard) CheckHost(ctx context.Context, host string) error {
 		return nil
 	}
 
+	// A numeric host that ParseIP rejects is a non-canonical IPv4 literal:
+	// octal (0177.0.0.1), hex (0x7f.0.0.1), plain decimal (2130706433), or
+	// short form (127.1). libc's inet_aton decodes all of these to real
+	// addresses, so reject them outright instead of falling through to a DNS
+	// lookup that cannot succeed.
+	if isNumericHost(host) {
+		return fmt.Errorf("ssrf guard: refusing non-canonical IP literal %q", host)
+	}
+
 	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
 	if err != nil {
-		return nil
+		return fmt.Errorf("ssrf guard: cannot resolve host %q: %w", host, err)
 	}
 
 	var firstBlocked net.IP
@@ -206,6 +226,45 @@ func (g *Guard) CheckHost(ctx context.Context, host string) error {
 		return nil
 	}
 	return &BlockedAddressError{Host: host, IP: firstBlocked}
+}
+
+// isNumericHost reports whether host is made of 1-4 dot-separated parts that
+// are all decimal, octal (leading 0) or hex (0x prefix) numbers — the grammar
+// libc's inet_aton accepts as an IPv4 literal. A canonical dotted quad parses
+// with net.ParseIP before this is consulted, so a match here means a
+// non-canonical literal.
+func isNumericHost(host string) bool {
+	parts := strings.Split(host, ".")
+	if len(parts) > 4 {
+		return false
+	}
+	for _, p := range parts {
+		if !isNumericPart(p) {
+			return false
+		}
+	}
+	return true
+}
+
+func isNumericPart(s string) bool {
+	if len(s) > 2 && (strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X")) {
+		s = s[2:]
+		for _, r := range s {
+			if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+				return false
+			}
+		}
+		return true
+	}
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // DialContext returns a dial function that rejects connections to blocked
