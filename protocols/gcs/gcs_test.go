@@ -1,7 +1,18 @@
 package gcs
 
 import (
+	"context"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+
+	"golang.org/x/oauth2"
+	"google.golang.org/api/option"
+	"google.golang.org/api/storage/v1"
+
+	"github.com/liamg/grabber/settings"
 )
 
 func TestDetect(t *testing.T) {
@@ -170,5 +181,110 @@ func TestPriority(t *testing.T) {
 	p := New()
 	if p.Priority() != 60 {
 		t.Errorf("Priority() = %d, want %d", p.Priority(), 60)
+	}
+}
+
+// stubTokenSource swaps out the Application Default Credentials lookup for the
+// duration of a test, so the credentials the machine happens to carry do not
+// decide which branch of authOption runs.
+func stubTokenSource(t *testing.T, ts oauth2.TokenSource, err error) {
+	t.Helper()
+	orig := defaultTokenSource
+	defaultTokenSource = func(context.Context, ...string) (oauth2.TokenSource, error) {
+		return ts, err
+	}
+	t.Cleanup(func() { defaultTokenSource = orig })
+}
+
+// fetchWith downloads an object through a client built from opt, against a
+// server that records the Authorization header it was sent. The endpoint is
+// passed separately from opt because newService short-circuits to
+// WithoutAuthentication whenever an endpoint is configured, which would hide the
+// credential-resolution branch under test.
+func fetchWith(t *testing.T, opt option.ClientOption) (body, auth string) {
+	t.Helper()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth = r.Header.Get("Authorization")
+		_, _ = w.Write([]byte("chart bytes"))
+	}))
+	defer srv.Close()
+
+	ctx := context.Background()
+	svc, err := storage.NewService(ctx, opt, option.WithEndpoint(srv.URL))
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+
+	resp, err := svc.Objects.Get("public-bucket", "index.yaml").Context(ctx).Download()
+	if err != nil {
+		t.Fatalf("downloading object: %v", err)
+	}
+	defer resp.Body.Close()
+
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("reading object: %v", err)
+	}
+	return string(raw), auth
+}
+
+// TestAuthOptionNoCredentials covers the fallback taken when no credentials can
+// be resolved: the request has to go out unauthenticated, which is what a public
+// bucket serves. A token source carrying a nil token satisfies the option's type
+// but panics inside the auth transport on the first request - Token.Extra on a
+// nil token - taking down anything fetching a public bucket from an environment
+// without ADC.
+func TestAuthOptionNoCredentials(t *testing.T) {
+	stubTokenSource(t, nil, errors.New("could not find default credentials"))
+
+	opt, err := authOption(context.Background(), settings.Settings{}, "")
+	if err != nil {
+		t.Fatalf("authOption: %v", err)
+	}
+
+	body, auth := fetchWith(t, opt)
+	if body != "chart bytes" {
+		t.Errorf("body = %q, want %q", body, "chart bytes")
+	}
+	if auth != "" {
+		t.Errorf("Authorization = %q, want no credentials to be sent", auth)
+	}
+}
+
+// TestAuthOptionUsesADC guards the other side of that fallback: when credentials
+// do resolve, they are the ones the request carries.
+func TestAuthOptionUsesADC(t *testing.T) {
+	stubTokenSource(t, oauth2.StaticTokenSource(&oauth2.Token{
+		AccessToken: "adc-token",
+		TokenType:   "Bearer",
+	}), nil)
+
+	opt, err := authOption(context.Background(), settings.Settings{}, "")
+	if err != nil {
+		t.Fatalf("authOption: %v", err)
+	}
+
+	if _, auth := fetchWith(t, opt); auth != "Bearer adc-token" {
+		t.Errorf("Authorization = %q, want %q", auth, "Bearer adc-token")
+	}
+}
+
+// TestAuthOptionCustomEndpointSkipsADC pins the branch ordering: a custom
+// endpoint is an emulator or private endpoint that issues no Google credentials,
+// so ADC must not be consulted even when it would resolve.
+func TestAuthOptionCustomEndpointSkipsADC(t *testing.T) {
+	stubTokenSource(t, oauth2.StaticTokenSource(&oauth2.Token{
+		AccessToken: "adc-token",
+		TokenType:   "Bearer",
+	}), nil)
+
+	opt, err := authOption(context.Background(), settings.Settings{}, "http://gcs.internal:4443")
+	if err != nil {
+		t.Fatalf("authOption: %v", err)
+	}
+
+	if _, auth := fetchWith(t, opt); auth != "" {
+		t.Errorf("Authorization = %q, want no credentials to be sent", auth)
 	}
 }

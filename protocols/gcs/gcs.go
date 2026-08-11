@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/option"
 	"google.golang.org/api/storage/v1"
@@ -146,6 +145,11 @@ func (d *Downloader) Download(ctx context.Context, tmpDir string, s settings.Set
 	return true, d.downloadFile(ctx, svc, d.key, filepath.Join(tmpDir, filepath.Base(d.key)), s.MaxBytes)
 }
 
+// defaultTokenSource resolves Application Default Credentials. It is a variable
+// so tests can drive both the credentials-present and no-credentials paths
+// without the ambient environment deciding which one they exercise.
+var defaultTokenSource = google.DefaultTokenSource
+
 func (d *Downloader) newService(ctx context.Context, s settings.Settings) (*storage.Service, error) {
 	var opts []option.ClientOption
 
@@ -157,6 +161,20 @@ func (d *Downloader) newService(ctx context.Context, s settings.Settings) (*stor
 		opts = append(opts, option.WithEndpoint(endpoint))
 	}
 
+	authOpt, err := authOption(ctx, s, endpoint)
+	if err != nil {
+		return nil, err
+	}
+	opts = append(opts, authOpt)
+
+	return storage.NewService(ctx, opts...)
+}
+
+// authOption decides how the client authenticates: the configured service
+// account key if there is one, nothing at all against a custom endpoint (an
+// emulator or private endpoint issues no Google credentials), and otherwise
+// Application Default Credentials.
+func authOption(ctx context.Context, s settings.Settings, endpoint string) (option.ClientOption, error) {
 	if s.GCPCredentials.ServiceAccountKey != "" {
 		// Validate it looks like JSON before using it.
 		var js json.RawMessage
@@ -167,22 +185,24 @@ func (d *Downloader) newService(ctx context.Context, s settings.Settings) (*stor
 		if err != nil {
 			return nil, fmt.Errorf("parsing service account key: %w", err)
 		}
-		opts = append(opts, option.WithTokenSource(creds.TokenSource))
-	} else if endpoint != "" {
-		// Custom endpoint (e.g. fake-gcs-server) — skip credential resolution.
-		opts = append(opts, option.WithoutAuthentication())
-	} else {
-		// Try Application Default Credentials; fall back to anonymous access.
-		ts, err := google.DefaultTokenSource(ctx, storage.DevstorageReadOnlyScope)
-		if err != nil {
-			// No credentials available — use anonymous access (works for public buckets).
-			opts = append(opts, option.WithTokenSource(oauth2.StaticTokenSource(nil)))
-		} else {
-			opts = append(opts, option.WithTokenSource(ts))
-		}
+		return option.WithTokenSource(creds.TokenSource), nil
 	}
 
-	return storage.NewService(ctx, opts...)
+	if endpoint != "" {
+		// Custom endpoint (e.g. fake-gcs-server) — skip credential resolution.
+		return option.WithoutAuthentication(), nil
+	}
+
+	ts, err := defaultTokenSource(ctx, storage.DevstorageReadOnlyScope)
+	if err != nil {
+		// No credentials available, so the request goes out unauthenticated -
+		// which is what a public bucket serves. This has to be
+		// WithoutAuthentication rather than a token source carrying a nil token:
+		// the auth transport dereferences whatever token a source hands it, so a
+		// nil one panics on the first request instead of degrading.
+		return option.WithoutAuthentication(), nil
+	}
+	return option.WithTokenSource(ts), nil
 }
 
 func (d *Downloader) downloadFile(ctx context.Context, svc *storage.Service, key, dst string, maxBytes int64) error {
