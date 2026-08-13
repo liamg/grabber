@@ -289,9 +289,11 @@ not the target).
 
 ### HTTPS Credential Matching
 
-HTTPS credentials are matched using git-style semantics: host must match (case-insensitive), and if a path is specified it must be a prefix of the URL path. The most specific match (longest path prefix) wins.
+HTTPS credentials are matched using git-style semantics: host must match (case-insensitive), and if a path is specified it must be a prefix of the URL path. The most specific match (longest path prefix) wins, and among equally specific matches the first one configured wins.
 
-Credentials for HTTP, Git-over-HTTPS, and OCI are resolved in this order: credentials embedded in the URL → a matching static credential (`WithHTTPSCredential`/`WithOCICredentials`) → the dynamic function from `WithHTTPCredentialRequestFunction` (consulted only when nothing static matches) → the system git credential helper (unless disabled via `WithNoSystemFallback`). The dynamic function receives the protocol, host, and path and returns a username/password (either may be nil) plus a boolean; returning `false` defers to the next source.
+Credentials for HTTP, Git-over-HTTPS, and OCI are resolved in this order: credentials embedded in the URL → a matching static credential (`WithHTTPSCredential`/`WithOCICredentials`) → the dynamic function from `WithHTTPCredentialRequestFunction` → the system git credential helper (unless disabled via `WithNoSystemFallback`). A source is only consulted once everything ahead of it has come up empty. The dynamic function receives the protocol, host, and path and returns a username/password (either may be nil) plus a boolean; returning `false` defers to the next source.
+
+Git clones walk that whole order rather than stopping at the first match: a credential the remote rejects with a 401 is followed by the next matching one, then the dynamic function, then the system helper. One host often has several credentials configured with only some of them still valid, and this keeps a stale one from shadowing a working one. Any other failure (TLS, DNS, a missing ref) is returned immediately rather than retried against every credential. A complete `user:password` in the URL still wins outright, with no fallback.
 
 ```go
 g := grabber.New(

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -219,12 +220,30 @@ type HTTPSCredential struct {
 // MatchHTTPSCredential finds the best matching HTTPS credential for the given
 // URL. Matching works like git credential helpers: host must match, and if the
 // credential has a path, it must be a prefix of the URL path. The most specific
-// match (longest path prefix) wins. Returns nil if no credential matches.
+// match (longest path prefix) wins, and among equally specific matches the
+// first configured wins. Returns nil if no credential matches.
 //
 // A username in the URL names the account to authenticate as, and only a
 // credential for that account matches. git filters the same way: it will not
 // pair a stored password with an account it was not stored against.
 func (s Settings) MatchHTTPSCredential(rawURL string) *HTTPSCredential {
+	creds := s.MatchHTTPSCredentials(rawURL)
+	if len(creds) == 0 {
+		return nil
+	}
+	return creds[0]
+}
+
+// MatchHTTPSCredentials returns every credential matching rawURL, ordered most
+// specific first (longest path prefix) and, among equally specific matches, in
+// configuration order. Matching is as described on MatchHTTPSCredential.
+//
+// One host commonly has several credentials configured with only some of them
+// still valid, so a caller that can retry offers each in turn rather than
+// letting the first choice decide the download. git behaves the same way: it
+// walks its configured helpers until one produces a credential the remote
+// accepts.
+func (s Settings) MatchHTTPSCredentials(rawURL string) []*HTTPSCredential {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return nil
@@ -235,8 +254,13 @@ func (s Settings) MatchHTTPSCredential(rawURL string) *HTTPSCredential {
 		urlUser = u.User.Username()
 	}
 
-	var best *HTTPSCredential
-	bestPathLen := -1
+	// pathLen is the length of the credential's path prefix, or -1 for a
+	// host-only credential, which is the least specific match there is.
+	type match struct {
+		cred    *HTTPSCredential
+		pathLen int
+	}
+	var matches []match
 
 	for i := range s.HTTPSCredentials {
 		cred := &s.HTTPSCredentials[i]
@@ -249,26 +273,30 @@ func (s Settings) MatchHTTPSCredential(rawURL string) *HTTPSCredential {
 			continue
 		}
 
+		pathLen := -1
 		if cred.Path != "" {
 			credPath := strings.TrimSuffix(cred.Path, "/")
 			urlPath := strings.TrimSuffix(u.Path, "/")
 			if !strings.HasPrefix(urlPath, credPath) {
 				continue
 			}
-			if len(credPath) > bestPathLen {
-				bestPathLen = len(credPath)
-				best = cred
-			}
-			continue
+			pathLen = len(credPath)
 		}
 
-		// Host-only match — use if no path-specific match found yet.
-		if bestPathLen < 0 {
-			best = cred
-		}
+		matches = append(matches, match{cred: cred, pathLen: pathLen})
 	}
 
-	return best
+	// Stable, so credentials of equal specificity keep configuration order and
+	// the first one configured is tried first.
+	slices.SortStableFunc(matches, func(a, b match) int {
+		return b.pathLen - a.pathLen
+	})
+
+	creds := make([]*HTTPSCredential, len(matches))
+	for i, m := range matches {
+		creds[i] = m.cred
+	}
+	return creds
 }
 
 // MatchSSHKey finds the best matching SSH private key for the given host. A
