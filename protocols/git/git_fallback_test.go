@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	gogit "github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/go-git/go-git/v6/plumbing/transport"
 
 	"github.com/liamg/grabber/settings"
@@ -148,5 +149,46 @@ func TestGitHostPort(t *testing.T) {
 		if host != tt.host || port != tt.port {
 			t.Errorf("gitHostPort(%q) = (%q,%q), want (%q,%q)", tt.url, host, port, tt.host, tt.port)
 		}
+	}
+}
+
+// TestMissingRef covers the wire protocol v2 ambiguity. go-git asks ls-refs for
+// only the namespace it wants, so a reference that is not on the remote comes
+// back as an empty ref list, which go-git reports as an empty repository. That
+// has to be read as "this ref is missing" so the next spelling is tried — but
+// only when a reference was actually named.
+func TestMissingRef(t *testing.T) {
+	named := cloneAttempt{refName: plumbing.NewBranchReferenceName("v1.0.0")}
+	unnamed := cloneAttempt{refName: ""}
+
+	tests := []struct {
+		name    string
+		attempt cloneAttempt
+		err     error
+		want    bool
+	}{
+		{"ref not found", named, gogit.ErrRemoteRefNotFound, true},
+		{"ref not found, no ref named", unnamed, gogit.ErrRemoteRefNotFound, true},
+		{
+			name:    "empty repository for a named ref is a missing ref",
+			attempt: named,
+			err:     fmt.Errorf("cloning repo: %w", transport.ErrEmptyRemoteRepository),
+			want:    true,
+		},
+		{
+			name:    "empty repository with no ref named is a genuinely empty repository",
+			attempt: unnamed,
+			err:     transport.ErrEmptyRemoteRepository,
+			want:    false,
+		},
+		{"any other failure", named, errors.New("auth required"), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := missingRef(tt.attempt, tt.err); got != tt.want {
+				t.Errorf("missingRef = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

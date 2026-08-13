@@ -545,6 +545,23 @@ type cloneAttempt struct {
 	singleBranch bool
 }
 
+// missingRef reports whether err means the attempted reference is not on the
+// remote, so the next spelling is worth trying.
+//
+// Over wire protocol v2 the reference is not advertised up front: go-git asks
+// ls-refs for the one namespace it wants, and a server with nothing to return
+// for that filter produces an empty ref list. go-git reads that as an empty
+// repository, so a missing ref on a single-branch clone surfaces as
+// ErrEmptyRemoteRepository rather than ErrRemoteRefNotFound. That is only
+// ambiguous when a reference was actually named — an unfiltered clone that
+// comes back empty really is an empty repository.
+func missingRef(attempt cloneAttempt, err error) bool {
+	if errors.Is(err, git.ErrRemoteRefNotFound) {
+		return true
+	}
+	return attempt.refName != "" && errors.Is(err, transport.ErrEmptyRemoteRepository)
+}
+
 // cloneByAttempts clones at the first of the ordered reference candidates that
 // exists on the remote. Only a missing ref moves on to the next spelling; any
 // other failure (auth, transport, protocol) would fail identically for every
@@ -562,7 +579,7 @@ func cloneByAttempts(ctx context.Context, cloneDir string, cloneOpts *git.CloneO
 		if err == nil {
 			return repo, nil
 		}
-		if !errors.Is(err, git.ErrRemoteRefNotFound) {
+		if !missingRef(attempt, err) {
 			return nil, err
 		}
 	}
@@ -572,6 +589,11 @@ func cloneByAttempts(ctx context.Context, cloneDir string, cloneOpts *git.CloneO
 			names[i] = attempt.refName.String()
 		}
 		return nil, fmt.Errorf("%w %q (tried %s)", git.ErrRemoteRefNotFound, ref, strings.Join(names, ", "))
+	}
+	// One spelling, and it was missing: say so, rather than passing on go-git's
+	// "empty repository" for a repository that is not empty.
+	if len(attempts) == 1 && attempts[0].refName != "" && errors.Is(err, transport.ErrEmptyRemoteRepository) {
+		return nil, fmt.Errorf("%w %q", git.ErrRemoteRefNotFound, ref)
 	}
 	return nil, err
 }
