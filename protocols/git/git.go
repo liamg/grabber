@@ -371,9 +371,14 @@ func resetDir(dir string) error {
 	return os.MkdirAll(dir, 0o755)
 }
 
-// gitDownload clones the repo (and checks out d.ref if it is a commit hash)
-// into tmpDir, then strips the .git directory and, if d.subdir is set, promotes
-// that subdirectory's contents to the top level.
+// gitDownload clones the repo into tmpDir, offering each candidate credential
+// in turn until one is accepted.
+//
+// A remote that rejects the credential is the one failure another credential
+// can fix, and a host commonly has several configured with only one of them
+// still valid. Stopping at the first rejection lets a stale credential shadow a
+// working one and fails the whole download; git does not do that, and neither
+// does this.
 func (d *Downloader) gitDownload(ctx context.Context, tmpDir string, s settings.Settings) error {
 	// go-git dials directly (not through our transport), so apply the SSRF guard
 	// as a pre-fetch check on the repo host.
@@ -381,11 +386,79 @@ func (d *Downloader) gitDownload(ctx context.Context, tmpDir string, s settings.
 		return err
 	}
 
-	clientOpts, err := d.clientOptions(ctx, s)
+	// The transport (CA bundle, client certificate, proxy, SSRF-guarded dialer)
+	// does not depend on the credential, so it is built once and shared by every
+	// attempt.
+	transportOpts, err := d.transportOptions(s)
 	if err != nil {
-		return fmt.Errorf("resolving git auth: %w", err)
+		return err
 	}
 
+	var errs []error
+	attempted := false
+
+	for _, candidate := range d.authCandidates(ctx, s) {
+		auth, err := candidate.resolve()
+		if err != nil {
+			return fmt.Errorf("resolving git auth: %w", err)
+		}
+		if auth == nil {
+			continue // this source had nothing to offer
+		}
+		authOpts, err := authOptions(auth)
+		if err != nil {
+			return fmt.Errorf("resolving git auth: %w", err)
+		}
+
+		if attempted {
+			// Clear the partial clone left by the rejected credential.
+			if resetErr := resetDir(tmpDir); resetErr != nil {
+				return errors.Join(append(errs, resetErr)...)
+			}
+		}
+		attempted = true
+
+		err = d.cloneAndPrepare(ctx, tmpDir, s, append(authOpts, transportOpts...))
+		if err == nil {
+			return nil
+		}
+		errs = append(errs, err)
+		// Only a rejected credential is worth retrying with another one.
+		if !authFailure(err) {
+			break
+		}
+	}
+
+	last := len(errs) - 1
+	switch {
+	case !attempted:
+		// No source supplied a credential, so the remote may well be public.
+		return d.cloneAndPrepare(ctx, tmpDir, s, transportOpts)
+	case last == 0:
+		return errs[0]
+	case authFailure(errs[last]):
+		// Every credential was offered and every one came back rejected. The
+		// individual 401s are identical, so the count is the useful part.
+		return fmt.Errorf("tried %d credentials for this remote, all rejected; last error: %w",
+			len(errs), errs[last])
+	default:
+		// A credential was rejected and then something else went wrong, so both
+		// halves of the story matter.
+		return errors.Join(errs...)
+	}
+}
+
+// authFailure reports whether err is the remote rejecting the credential that
+// was offered — the one failure a different credential could fix.
+func authFailure(err error) bool {
+	return errors.Is(err, transport.ErrAuthenticationRequired) ||
+		errors.Is(err, transport.ErrAuthorizationFailed)
+}
+
+// cloneAndPrepare clones the repo (and checks out d.ref if it is a commit hash)
+// into tmpDir, then strips the .git directory and, if d.subdir is set, checks
+// that subdirectory exists.
+func (d *Downloader) cloneAndPrepare(ctx context.Context, tmpDir string, s settings.Settings, clientOpts []client.Option) error {
 	// Sparse checkout downloads only the objects backing the requested
 	// directory. It falls through to a full clone when the remote cannot serve
 	// a partial clone.
@@ -579,24 +652,19 @@ func (d *Downloader) tagMode() plumbing.TagMode {
 	return plumbing.NoTags
 }
 
-// clientOptions builds the go-git transport client options for this download:
-// authentication plus, for HTTP(S) remotes, the CA bundle, client certificate,
-// proxy and SSRF-guarded dialer resolved from settings by host. The options are
+// transportOptions builds the non-authentication go-git client options for this
+// download: for HTTP(S) remotes, the CA bundle, client certificate, proxy and
+// SSRF-guarded dialer resolved from settings by host. The options are
 // per-clone, so there is no global transport state to race on.
-func (d *Downloader) clientOptions(ctx context.Context, s settings.Settings) ([]client.Option, error) {
-	opts, err := d.authOptions(ctx, s)
-	if err != nil {
-		return nil, err
-	}
-
+func (d *Downloader) transportOptions(s settings.Settings) ([]client.Option, error) {
 	tr, err := httpTransportFor(d.repoURL, s)
 	if err != nil {
 		return nil, err
 	}
-	if tr != nil {
-		opts = append(opts, client.WithHTTPClient(&nethttp.Client{Transport: tr}))
+	if tr == nil {
+		return nil, nil
 	}
-	return opts, nil
+	return []client.Option{client.WithHTTPClient(&nethttp.Client{Transport: tr})}, nil
 }
 
 // httpTransportFor builds the HTTP transport for an HTTP(S) remote, layering the
@@ -619,16 +687,11 @@ func httpTransportFor(repoURL string, s settings.Settings) (*nethttp.Transport, 
 // package variable so tests can verify it is (or is not) consulted.
 var credentialFillFunc = gitCredentialFill
 
-// authOptions wraps the resolved authentication as go-git client options.
-// Anonymous access yields no options.
-func (d *Downloader) authOptions(ctx context.Context, s settings.Settings) ([]client.Option, error) {
-	auth, err := d.resolveAuth(ctx, s)
-	if err != nil || auth == nil {
-		return nil, err
-	}
+// authOptions wraps a resolved credential as go-git client options.
+func authOptions(auth any) ([]client.Option, error) {
 	switch a := auth.(type) {
 	case *ssh.PublicKeysCallback:
-		return []client.Option{client.WithSSHAuth(a)}, nil
+		return []client.Option{client.WithSSHAuth(newSSHAuth(a))}, nil
 	case *http.BasicAuth:
 		return []client.Option{client.WithHTTPAuth(a)}, nil
 	default:
@@ -636,29 +699,44 @@ func (d *Downloader) authOptions(ctx context.Context, s settings.Settings) ([]cl
 	}
 }
 
-// resolveAuth resolves the credentials for the remote, returning
-// *ssh.PublicKeysCallback for SSH remotes, *http.BasicAuth for HTTP(S) remotes,
-// or nil for anonymous access.
-func (d *Downloader) resolveAuth(ctx context.Context, s settings.Settings) (any, error) {
-	// Check for SSH URL.
+// authCandidate is one credential source in the ordered chain for a remote. The
+// credential is resolved lazily, so a source with a side effect — the system git
+// credential helper shells out to git — is only consulted once every preceding
+// candidate has been tried and rejected.
+type authCandidate struct {
+	// resolve returns the credential, or a nil credential when this source has
+	// nothing to offer and the chain should move on.
+	resolve func() (any, error)
+}
+
+// authCandidates returns the ordered credential chain for the remote, yielding
+// *ssh.PublicKeysCallback for SSH remotes and *http.BasicAuth for HTTP(S) ones.
+// An empty chain (or one where every source declines) means anonymous access.
+func (d *Downloader) authCandidates(ctx context.Context, s settings.Settings) []authCandidate {
+	// SSH offers every identity in a single handshake and lets the server pick,
+	// so there is nothing to fall back to: one candidate covers them all.
 	if strings.HasPrefix(d.repoURL, "ssh://") || scpPattern.MatchString(d.repoURL) {
-		auth, err := d.resolveSSHAuth(s)
-		if err != nil || auth == nil {
-			// Returned untyped so callers can compare against nil.
-			return nil, err
-		}
-		return auth, nil
+		return []authCandidate{{resolve: func() (any, error) {
+			auth, err := d.resolveSSHAuth(s)
+			if err != nil || auth == nil {
+				// Returned untyped so callers can compare against nil.
+				return nil, err
+			}
+			return auth, nil
+		}}}
 	}
 
-	// For HTTPS, a complete credential embedded in the URL wins.
 	u, err := url.Parse(d.repoURL)
 	urlUser := ""
 	if err == nil && u.User != nil {
+		// For HTTPS, a complete credential embedded in the URL wins outright:
+		// the caller named the secret to use, so there is nothing to fall back
+		// to.
 		if password, ok := u.User.Password(); ok {
-			return &http.BasicAuth{
-				Username: u.User.Username(),
-				Password: password,
-			}, nil
+			username := u.User.Username()
+			return []authCandidate{{resolve: func() (any, error) {
+				return &http.BasicAuth{Username: username, Password: password}, nil
+			}}}
 		}
 		// A username with no password is not a credential. It names the account
 		// to authenticate as, and the password has to come from somewhere else.
@@ -671,26 +749,33 @@ func (d *Downloader) resolveAuth(ctx context.Context, s settings.Settings) (any,
 		urlUser = u.User.Username()
 	}
 
-	// Check configured HTTPS credentials.
-	if cred := s.MatchHTTPSCredential(d.repoURL); cred != nil {
-		return &http.BasicAuth{
-			Username: cred.Username,
-			Password: cred.Password,
-		}, nil
+	var candidates []authCandidate
+
+	// Every configured credential matching the remote, most specific first.
+	for _, cred := range s.MatchHTTPSCredentials(d.repoURL) {
+		candidates = append(candidates, authCandidate{resolve: func() (any, error) {
+			return &http.BasicAuth{Username: cred.Username, Password: cred.Password}, nil
+		}})
 	}
 
-	// Ask the dynamic credential function (before the system fallback).
 	if u != nil {
-		if user, pass, ok := s.RequestCredential(ctx, u.Scheme, u.Hostname(), u.Path); ok {
-			return &http.BasicAuth{Username: user, Password: pass}, nil
-		}
-	}
+		// The dynamic credential function, ahead of the system fallback.
+		candidates = append(candidates, authCandidate{resolve: func() (any, error) {
+			if user, pass, ok := s.RequestCredential(ctx, u.Scheme, u.Hostname(), u.Path); ok {
+				return &http.BasicAuth{Username: user, Password: pass}, nil
+			}
+			return nil, nil
+		}})
 
-	// Try the system git credential helper (e.g. osxkeychain, manager-core).
-	// This is a system fallback and is skipped when disabled.
-	if !s.NoSystemFallback && u != nil && (u.Scheme == "https" || u.Scheme == "http") {
-		if auth := credentialFillFunc(ctx, u.Scheme, u.Hostname(), urlUser); auth != nil {
-			return auth, nil
+		// The system git credential helper (e.g. osxkeychain, manager-core).
+		// This is a system fallback and is skipped when disabled.
+		if !s.NoSystemFallback && (u.Scheme == "https" || u.Scheme == "http") {
+			candidates = append(candidates, authCandidate{resolve: func() (any, error) {
+				if auth := credentialFillFunc(ctx, u.Scheme, u.Hostname(), urlUser); auth != nil {
+					return auth, nil
+				}
+				return nil, nil
+			}})
 		}
 	}
 
@@ -698,10 +783,76 @@ func (d *Downloader) resolveAuth(ctx context.Context, s settings.Settings) (any,
 	// hosts accept as a whole credential — a personal access token in the
 	// username position, for instance.
 	if urlUser != "" {
-		return &http.BasicAuth{Username: urlUser}, nil
+		candidates = append(candidates, authCandidate{resolve: func() (any, error) {
+			return &http.BasicAuth{Username: urlUser}, nil
+		}})
 	}
 
+	return candidates
+}
+
+// resolveAuth resolves the first credential the chain offers for the remote,
+// returning *ssh.PublicKeysCallback for SSH remotes, *http.BasicAuth for HTTP(S)
+// remotes, or nil for anonymous access. The download itself walks the whole
+// chain (see gitDownload); this is the single-answer view of it.
+func (d *Downloader) resolveAuth(ctx context.Context, s settings.Settings) (any, error) {
+	for _, candidate := range d.authCandidates(ctx, s) {
+		auth, err := candidate.resolve()
+		if err != nil {
+			return nil, err
+		}
+		if auth != nil {
+			return auth, nil
+		}
+	}
 	return nil, nil
+}
+
+// sshAuth adapts a go-git SSH auth method so that, when grabber supplies the
+// host key policy, the client config also names the host key algorithms to
+// negotiate.
+//
+// go-git derives those algorithms from known_hosts whenever the config leaves
+// them unset, and a missing known_hosts file is fatal there — even with host
+// key verification switched off, where the file would never be read. That
+// lookup is independent of the host key callback, so a container with no
+// ~/.ssh/known_hosts failed every SSH clone with "unable to find any valid
+// known_hosts file, set SSH_KNOWN_HOSTS env variable", whatever key or
+// host-key policy the caller configured, and the configured key never got
+// offered. Naming the algorithms keeps that lookup from running; the list is
+// the one x/crypto/ssh negotiates when the field is empty, so nothing else
+// about the handshake changes.
+type sshAuth struct {
+	*ssh.PublicKeysCallback
+
+	// ownHostKeyPolicy records that grabber decided how host keys are verified,
+	// so go-git has no reason to read known_hosts at all. Without it go-git is
+	// verifying against the user's own ~/.ssh/known_hosts, where the algorithms
+	// recorded for the host are the stricter choice and are left to go-git.
+	ownHostKeyPolicy bool
+}
+
+var _ client.SSHAuth = sshAuth{}
+
+// newSSHAuth wraps auth, noting whether it carries a host key policy of our
+// own. It must be read here rather than in ClientConfig, which is where go-git
+// fills a nil callback in with its known_hosts default.
+func newSSHAuth(auth *ssh.PublicKeysCallback) sshAuth {
+	return sshAuth{
+		PublicKeysCallback: auth,
+		ownHostKeyPolicy:   auth.HostKeyCallback != nil,
+	}
+}
+
+func (a sshAuth) ClientConfig(ctx context.Context, req *transport.Request) (*cryptossh.ClientConfig, error) {
+	cfg, err := a.PublicKeysCallback.ClientConfig(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	if a.ownHostKeyPolicy && len(cfg.HostKeyAlgorithms) == 0 {
+		cfg.HostKeyAlgorithms = cryptossh.SupportedAlgorithms().HostKeys
+	}
+	return cfg, nil
 }
 
 // resolveSSHAuth builds the SSH authentication method. A configured key and the
