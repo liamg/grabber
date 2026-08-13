@@ -50,6 +50,13 @@ func TestDownload_GitOverSSH(t *testing.T) {
 	}
 
 	ctx := context.Background()
+
+	// Run as a container does: no known_hosts file to fall back on, so the
+	// configured host-key policy is the only thing deciding the handshake. On a
+	// developer machine ~/.ssh/known_hosts otherwise masks a policy that never
+	// reaches go-git (FIX-574).
+	t.Setenv("SSH_KNOWN_HOSTS", filepath.Join(t.TempDir(), "absent_known_hosts"))
+
 	privateKey, authorizedKey := generateSSHKeyPair(t)
 
 	// Create a temp directory with the authorized key and a bare git repo.

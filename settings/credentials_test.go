@@ -65,11 +65,19 @@ func TestMatchHTTPSCredential_FiltersByURLUsername(t *testing.T) {
 	})
 
 	t.Run("no username in the URL matches on host alone", func(t *testing.T) {
-		// Host-only credentials do not rank against each other, so the last one
-		// configured wins. Unchanged by the username filter.
+		// Host-only credentials do not rank against each other, so the first one
+		// configured wins — as with git's credential store. Unchanged by the
+		// username filter.
 		got := s.MatchHTTPSCredential("https://example.com/org/repo")
-		if got == nil || got.Password != "acme-pass" {
-			t.Fatalf("got %#v, want the last host-only match", got)
+		if got == nil || got.Password != "other-pass" {
+			t.Fatalf("got %#v, want the first host-only match", got)
+		}
+	})
+
+	t.Run("every host-only match is offered, in configuration order", func(t *testing.T) {
+		got := s.MatchHTTPSCredentials("https://example.com/org/repo")
+		if len(got) != 2 || got[0].Password != "other-pass" || got[1].Password != "acme-pass" {
+			t.Fatalf("got %#v, want both credentials in configuration order", got)
 		}
 	})
 
