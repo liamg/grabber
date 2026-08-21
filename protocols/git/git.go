@@ -26,6 +26,7 @@ import (
 	"github.com/go-git/go-git/v6/plumbing/transport/ssh"
 	cryptossh "golang.org/x/crypto/ssh"
 
+	"github.com/liamg/grabber/internal/childenv"
 	"github.com/liamg/grabber/protocols"
 	"github.com/liamg/grabber/settings"
 )
@@ -1041,9 +1042,9 @@ func gitCredentialFill(ctx context.Context, protocol, host, username string) *ht
 	cmd.Stdin = strings.NewReader(query + "\n")
 	// Configured helpers (keychain, manager-core, ...) are still consulted; what
 	// this suppresses is git falling back to asking a human. A library call must
-	// not be able to block on a terminal, and in a runner there is no terminal to
-	// answer it.
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	// not be able to block on a terminal or a GUI dialog, and in a runner there is
+	// nothing to answer either.
+	cmd.Env = childenv.NonInteractive()
 
 	out, err := cmd.Output()
 	if err != nil {

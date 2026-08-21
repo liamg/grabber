@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/liamg/grabber/internal/childenv"
 	"github.com/liamg/grabber/protocols"
 	"github.com/liamg/grabber/settings"
 )
@@ -157,7 +158,9 @@ func (d *Downloader) Download(ctx context.Context, tmpDir string, s settings.Set
 	args = append(args, "--", d.repoURL, cloneDir)
 
 	cmd := exec.CommandContext(ctx, "hg", args...)
-	cmd.Env = os.Environ()
+	// hg over ssh can reach for an askpass helper, which would block the clone on
+	// a GUI dialog nobody is there to answer.
+	cmd.Env = childenv.NonInteractive()
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return false, fmt.Errorf("cloning mercurial repo: %s: %w", string(output), err)
 	}
