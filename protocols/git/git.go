@@ -188,10 +188,34 @@ var knownGitHosts = []string{
 	"sr.ht",
 }
 
+// reservedHostPaths are first path segments that no repository on a known Git
+// host can occupy, because the host reserves them for its own endpoints. What
+// sits under one of them is something the host serves *about* repositories -
+// its REST API, its package and module registries - rather than a repository,
+// so the known-host rule below must not claim it.
+var reservedHostPaths = map[string]bool{
+	"api": true,
+}
+
 func isGitURL(u *url.URL) bool {
 	// SSH scheme is always Git.
 	if u.Scheme == "ssh" {
 		return true
+	}
+
+	// "?archive=" names the format of an archive to download and unpack, which
+	// only means anything to a getter that fetches a file: whatever it points
+	// at, it is not a repository to clone. It is checked before the signals
+	// below because this protocol drops the query when it parses a URL, so
+	// claiming one of these would not just clone the wrong thing - it would
+	// discard the caller's instruction on the way.
+	//
+	// Terraform module registries are where this collides with the known-host
+	// rule: GitLab's answers a download lookup with
+	// "https://gitlab.com/api/v4/.../file?token=<jwt>&archive=tgz", a tarball
+	// served by gitlab.com rather than a repository on it.
+	if u.Query().Has("archive") {
+		return false
 	}
 
 	// .git suffix is a strong signal.
@@ -199,15 +223,35 @@ func isGitURL(u *url.URL) bool {
 		return true
 	}
 
-	// Known Git hosts.
+	// Known Git hosts, where the path is shaped like a repository's.
 	host := strings.ToLower(u.Hostname())
 	for _, known := range knownGitHosts {
 		if host == known {
-			return true
+			return isRepoPath(u.Path)
 		}
 	}
 
 	return false
+}
+
+// isRepoPath reports whether a path on a known Git host is shaped like a
+// repository's: an owner and a name at the least, and not under a segment the
+// host keeps for itself. The host alone is not enough to go on - every one of
+// these serves plenty that is not a repository - and without the path to
+// narrow it, this protocol claims those too, ahead of the one that could
+// actually fetch them.
+//
+// The bar is deliberately low. GitLab nests groups arbitrarily deeply, so there
+// is no upper bound on the segment count to check against, and a name that is
+// merely unusual should still be fetched; it is the paths that cannot be a
+// repository that this is here to turn away.
+func isRepoPath(p string) bool {
+	repoPath, _ := splitSubdir(p)
+	segments := strings.Split(strings.Trim(repoPath, "/"), "/")
+	if len(segments) < 2 {
+		return false
+	}
+	return !reservedHostPaths[strings.ToLower(segments[0])]
 }
 
 // splitSubdir splits a path on "//" into the repo path and subdirectory.
