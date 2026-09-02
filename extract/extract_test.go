@@ -328,6 +328,82 @@ func TestExtract_Zip_PathTraversal(t *testing.T) {
 	}
 }
 
+func TestExtract_Tar_ParentEntry(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "evil.tar")
+	writeTarRaw(t, src, map[string]string{
+		"..": "pwned",
+	})
+
+	dst := t.TempDir()
+	_, err := Extract(src, dst)
+	if err == nil {
+		t.Fatal("expected error for tar entry \"..\"")
+	}
+}
+
+// A sibling directory whose name starts with the destination's name must not
+// pass the guard, e.g. dst "/tmp/x" and target "/tmp/xevil".
+func TestExtract_Tar_SiblingPrefixEscape(t *testing.T) {
+	dst := filepath.Join(t.TempDir(), "dst")
+	if err := os.MkdirAll(dst, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	src := filepath.Join(t.TempDir(), "evil.tar")
+	writeTarRaw(t, src, map[string]string{
+		"../dstevil/passwd": "pwned",
+	})
+
+	_, err := Extract(src, dst)
+	if err == nil {
+		t.Fatal("expected error for sibling-prefix escape in tar")
+	}
+}
+
+// --- archive root entry ---
+//
+// A "./" entry naming the archive's own root is a normal entry (GitLab
+// package-registry tarballs carry one) and must not be treated as traversal.
+
+func TestExtract_Tar_RootEntry(t *testing.T) {
+	for _, root := range []string{"./", "."} {
+		t.Run(root, func(t *testing.T) {
+			src := filepath.Join(t.TempDir(), "mod.tar")
+			writeTarRoot(t, src, root, map[string]string{
+				"./main.tf": "resource {}",
+			})
+
+			dst := t.TempDir()
+			extracted, err := Extract(src, dst)
+			if err != nil {
+				t.Fatalf("Extract: %v", err)
+			}
+			if !extracted {
+				t.Fatal("expected extracted=true")
+			}
+			assertFile(t, filepath.Join(dst, "main.tf"), "resource {}")
+		})
+	}
+}
+
+func TestExtract_Zip_RootEntry(t *testing.T) {
+	src := filepath.Join(t.TempDir(), "mod.zip")
+	writeZip(t, src, map[string]string{
+		"./":        "",
+		"./main.tf": "resource {}",
+	})
+
+	dst := t.TempDir()
+	extracted, err := Extract(src, dst)
+	if err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	if !extracted {
+		t.Fatal("expected extracted=true")
+	}
+	assertFile(t, filepath.Join(dst, "main.tf"), "resource {}")
+}
+
 // --- helpers ---
 
 func assertFile(t *testing.T, path, expected string) {
@@ -373,6 +449,43 @@ func writeTar(t *testing.T, dst string, files map[string]string) {
 func writeTarRaw(t *testing.T, dst string, files map[string]string) {
 	t.Helper()
 	os.WriteFile(dst, tarBytes(t, files), 0o644)
+}
+
+// writeTarRoot writes a tar led by a directory entry named root — the archive's
+// own root, as GNU tar and the GitLab package registry emit it — followed by
+// the given regular files.
+func writeTarRoot(t *testing.T, dst, root string, files map[string]string) {
+	t.Helper()
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+
+	if err := tw.WriteHeader(&tar.Header{
+		Name:     root,
+		Mode:     0o755,
+		Typeflag: tar.TypeDir,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	for name, content := range files {
+		hdr := &tar.Header{
+			Name:     name,
+			Mode:     0o644,
+			Size:     int64(len(content)),
+			Typeflag: tar.TypeReg,
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write([]byte(content)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	os.WriteFile(dst, buf.Bytes(), 0o644)
 }
 
 func writeGzip(t *testing.T, dst string, data []byte) {

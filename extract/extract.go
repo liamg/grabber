@@ -14,6 +14,8 @@ import (
 	"github.com/klauspost/compress/zstd"
 	"github.com/pierrec/lz4/v4"
 	"github.com/ulikunitz/xz"
+
+	"github.com/liamg/grabber/internal/safepath"
 )
 
 // Extract extracts the archive at src into the dst directory with no size limit.
@@ -167,11 +169,11 @@ func (e *extractor) untar(r io.Reader, dst string) error {
 			return err
 		}
 
-		target := filepath.Join(dst, header.Name)
-
-		// Prevent path traversal.
-		if !strings.HasPrefix(filepath.Clean(target), filepath.Clean(dst)+string(os.PathSeparator)) {
-			return fmt.Errorf("tar entry %q attempts path traversal", header.Name)
+		// Keep the entry inside dst. An entry naming the archive's own root
+		// ("./") lands on dst itself, which safepath.Join allows.
+		target, err := safepath.Join(dst, header.Name)
+		if err != nil {
+			return fmt.Errorf("tar entry: %w", err)
 		}
 
 		switch header.Typeflag {
@@ -201,11 +203,11 @@ func (e *extractor) extractZip(src, dst string) error {
 	defer zr.Close()
 
 	for _, f := range zr.File {
-		target := filepath.Join(dst, f.Name)
-
-		// Prevent path traversal.
-		if !strings.HasPrefix(filepath.Clean(target), filepath.Clean(dst)+string(os.PathSeparator)) {
-			return fmt.Errorf("zip entry %q attempts path traversal", f.Name)
+		// Keep the entry inside dst. An entry naming the archive's own root
+		// ("./") lands on dst itself, which safepath.Join allows.
+		target, err := safepath.Join(dst, f.Name)
+		if err != nil {
+			return fmt.Errorf("zip entry: %w", err)
 		}
 
 		if f.FileInfo().IsDir() {
