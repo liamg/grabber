@@ -278,8 +278,10 @@ func (s Settings) MatchHTTPSCredentials(rawURL string) []*HTTPSCredential {
 		pathLen := -1
 		if cred.Path != "" {
 			credPath := strings.TrimSuffix(cred.Path, "/")
-			urlPath := strings.TrimSuffix(u.Path, "/")
-			if !hasPrefixFold(urlPath, credPath) {
+			// A ".git" suffix is part of how the repo is addressed, not part of
+			// its path, so a credential for "/org/repo" covers "/org/repo.git".
+			urlPath := strings.TrimSuffix(strings.TrimSuffix(u.Path, "/"), ".git")
+			if !hasSegmentPrefixFold(urlPath, credPath) {
 				continue
 			}
 			pathLen = len(credPath)
@@ -306,6 +308,17 @@ func (s Settings) MatchHTTPSCredentials(rawURL string) []*HTTPSCredential {
 // scoped to "/Org" covers a request for "/org/repo".
 func hasPrefixFold(s, prefix string) bool {
 	return len(s) >= len(prefix) && strings.EqualFold(s[:len(prefix)], prefix)
+}
+
+// hasSegmentPrefixFold reports whether prefix covers s, matching only on a path
+// separator. A credential is scoped to a path, so it must not reach a sibling
+// that merely starts with the same characters: "/COO" covers "/COO/mod" but not
+// "/COOP-infra/mod", whose token belongs to a different organization.
+func hasSegmentPrefixFold(s, prefix string) bool {
+	if !hasPrefixFold(s, prefix) {
+		return false
+	}
+	return len(s) == len(prefix) || s[len(prefix)] == '/'
 }
 
 // MatchSSHKey finds the best matching SSH private key for the given host. A
