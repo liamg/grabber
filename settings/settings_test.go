@@ -74,6 +74,38 @@ func TestMatchHTTPSCredential(t *testing.T) {
 			wantUsername: "user1",
 		},
 		{
+			name: "credential path case insensitive",
+			credentials: []HTTPSCredential{
+				{Host: "github.com", Path: "/Org", Username: "user1", Password: "pass1"},
+			},
+			url:          "https://github.com/org/repo.git",
+			wantUsername: "user1",
+		},
+		{
+			name: "url path case insensitive",
+			credentials: []HTTPSCredential{
+				{Host: "github.com", Path: "/org", Username: "user1", Password: "pass1"},
+			},
+			url:          "https://github.com/ORG/repo.git",
+			wantUsername: "user1",
+		},
+		{
+			name: "azure devops org, mixed case either side",
+			credentials: []HTTPSCredential{
+				{Host: "dev.azure.com", Path: "/UniperTeamServices", Username: "tok"},
+			},
+			url:          "https://dev.azure.com/uniperteamservices/C0315-Coode/_git/Common-Data",
+			wantUsername: "tok",
+		},
+		{
+			name: "case folding does not make a different org match",
+			credentials: []HTTPSCredential{
+				{Host: "github.com", Path: "/Org", Username: "user1", Password: "pass1"},
+			},
+			url:     "https://github.com/other/repo.git",
+			wantNil: true,
+		},
+		{
 			name:    "empty credentials",
 			url:     "https://github.com/user/repo",
 			wantNil: true,
