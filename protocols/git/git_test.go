@@ -8,6 +8,8 @@ import (
 
 	"github.com/go-git/go-git/v6"
 	"github.com/go-git/go-git/v6/plumbing/object"
+
+	httpprotocol "github.com/liamg/grabber/protocols/http"
 )
 
 func TestParseGitURL(t *testing.T) {
@@ -200,6 +202,18 @@ func TestDetect(t *testing.T) {
 		{"ssh scheme", "ssh://git@github.com/user/repo.git", true},
 		{"not git", "https://example.com/file.txt", false},
 		{"s3 url", "https://s3.amazonaws.com/bucket/key", false},
+		{"gitlab nested groups", "https://gitlab.com/group/subgroup/repo", true},
+		{"gitlab with subdir", "https://gitlab.com/group/repo//modules/vpc", true},
+		{"azure devops", "https://dev.azure.com/org/project/_git/repo", true},
+
+		// A known host serves plenty that is not a repository. Claiming these
+		// clones something that was never a repository, and takes them from the
+		// HTTP protocol, which can fetch them.
+		{"gitlab module registry download", "https://gitlab.com/api/v4/packages/terraform/modules/v1/ns/name/aws/4.3.0/file?token=secret&archive=tgz", false},
+		{"gitlab api without archive", "https://gitlab.com/api/v4/projects/123/repository/files/main.tf", false},
+		{"github api path", "https://github.com/api/v3/repos/user/repo", false},
+		{"known host, owner only", "https://gitlab.com/user", false},
+		{"archive parameter on a known host", "https://gitlab.com/group/repo?archive=tar.gz", false},
 	}
 
 	for _, tt := range tests {
@@ -209,6 +223,23 @@ func TestDetect(t *testing.T) {
 				t.Errorf("Detect() ok = %v, want %v", ok, tt.wantOK)
 			}
 		})
+	}
+}
+
+// TestDetect_ArchiveGoesToHTTP is the whole point of refusing these: a URL the
+// Git protocol turns away has to be picked up by the protocol that can fetch
+// it, and the Git protocol is the one consulted first.
+func TestDetect_ArchiveGoesToHTTP(t *testing.T) {
+	const registryDownload = "https://gitlab.com/api/v4/packages/terraform/modules/v1/ns/name/aws/4.3.0/file?token=secret&archive=tgz"
+
+	if _, ok := New().Detect(registryDownload); ok {
+		t.Fatalf("Detect(%q) claimed a module registry download", registryDownload)
+	}
+	if _, ok := httpprotocol.New().Detect(registryDownload); !ok {
+		t.Fatalf("the HTTP protocol did not accept %q either; it would now be unfetchable", registryDownload)
+	}
+	if New().Priority() <= httpprotocol.New().Priority() {
+		t.Fatal("the Git protocol no longer outranks HTTP; this test is guarding nothing")
 	}
 }
 

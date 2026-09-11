@@ -210,6 +210,7 @@ type SSHCredential struct {
 // HTTPSCredential represents a credential for HTTPS URLs.
 // Matching follows git credential helper semantics: scheme + host must match,
 // and if a path is specified it must be a prefix of the request URL path.
+// Host and path are both matched case-insensitively.
 type HTTPSCredential struct {
 	Host     string // required, e.g. "github.com"
 	Username string
@@ -219,9 +220,10 @@ type HTTPSCredential struct {
 
 // MatchHTTPSCredential finds the best matching HTTPS credential for the given
 // URL. Matching works like git credential helpers: host must match, and if the
-// credential has a path, it must be a prefix of the URL path. The most specific
-// match (longest path prefix) wins, and among equally specific matches the
-// first configured wins. Returns nil if no credential matches.
+// credential has a path, it must be a case-insensitive prefix of the URL path.
+// The most specific match (longest path prefix) wins, and among equally
+// specific matches the first configured wins. Returns nil if no credential
+// matches.
 //
 // A username in the URL names the account to authenticate as, and only a
 // credential for that account matches. git filters the same way: it will not
@@ -276,8 +278,10 @@ func (s Settings) MatchHTTPSCredentials(rawURL string) []*HTTPSCredential {
 		pathLen := -1
 		if cred.Path != "" {
 			credPath := strings.TrimSuffix(cred.Path, "/")
-			urlPath := strings.TrimSuffix(u.Path, "/")
-			if !strings.HasPrefix(urlPath, credPath) {
+			// A ".git" suffix is part of how the repo is addressed, not part of
+			// its path, so a credential for "/org/repo" covers "/org/repo.git".
+			urlPath := strings.TrimSuffix(strings.TrimSuffix(u.Path, "/"), ".git")
+			if !hasSegmentPrefixFold(urlPath, credPath) {
 				continue
 			}
 			pathLen = len(credPath)
@@ -297,6 +301,24 @@ func (s Settings) MatchHTTPSCredentials(rawURL string) []*HTTPSCredential {
 		creds[i] = m.cred
 	}
 	return creds
+}
+
+// hasPrefixFold reports whether s starts with prefix, ignoring case. Repo paths
+// are case-insensitive on GitHub, GitLab and Azure DevOps, so a credential
+// scoped to "/Org" covers a request for "/org/repo".
+func hasPrefixFold(s, prefix string) bool {
+	return len(s) >= len(prefix) && strings.EqualFold(s[:len(prefix)], prefix)
+}
+
+// hasSegmentPrefixFold reports whether prefix covers s, matching only on a path
+// separator. A credential is scoped to a path, so it must not reach a sibling
+// that merely starts with the same characters: "/COO" covers "/COO/mod" but not
+// "/COOP-infra/mod", whose token belongs to a different organization.
+func hasSegmentPrefixFold(s, prefix string) bool {
+	if !hasPrefixFold(s, prefix) {
+		return false
+	}
+	return len(s) == len(prefix) || s[len(prefix)] == '/'
 }
 
 // MatchSSHKey finds the best matching SSH private key for the given host. A

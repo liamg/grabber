@@ -74,6 +74,90 @@ func TestMatchHTTPSCredential(t *testing.T) {
 			wantUsername: "user1",
 		},
 		{
+			name: "credential path case insensitive",
+			credentials: []HTTPSCredential{
+				{Host: "github.com", Path: "/Org", Username: "user1", Password: "pass1"},
+			},
+			url:          "https://github.com/org/repo.git",
+			wantUsername: "user1",
+		},
+		{
+			name: "url path case insensitive",
+			credentials: []HTTPSCredential{
+				{Host: "github.com", Path: "/org", Username: "user1", Password: "pass1"},
+			},
+			url:          "https://github.com/ORG/repo.git",
+			wantUsername: "user1",
+		},
+		{
+			name: "azure devops org, mixed case either side",
+			credentials: []HTTPSCredential{
+				{Host: "dev.azure.com", Path: "/UniperTeamServices", Username: "tok"},
+			},
+			url:          "https://dev.azure.com/uniperteamservices/C0315-Coode/_git/Common-Data",
+			wantUsername: "tok",
+		},
+		{
+			name: "case folding does not make a different org match",
+			credentials: []HTTPSCredential{
+				{Host: "github.com", Path: "/Org", Username: "user1", Password: "pass1"},
+			},
+			url:     "https://github.com/other/repo.git",
+			wantNil: true,
+		},
+		// A credential is scoped to a path, so it must only match on a separator.
+		// Without that "/COO" reaches "/COOP-infra", sending one organization's
+		// token to another.
+		{
+			name: "path prefix does not match a sibling org with the same start",
+			credentials: []HTTPSCredential{
+				{Host: "uniper.ghe.com", Path: "/COO", Username: "coo", Password: "coo-token"},
+			},
+			url:     "https://uniper.ghe.com/COOP-infra/mod.git",
+			wantNil: true,
+		},
+		{
+			name: "path prefix does not match a longer sibling name",
+			credentials: []HTTPSCredential{
+				{Host: "github.com", Path: "/infra", Username: "u", Password: "p"},
+			},
+			url:     "https://github.com/infrastructure/repo.git",
+			wantNil: true,
+		},
+		{
+			name: "a sibling falls back to a host-only credential rather than borrowing",
+			credentials: []HTTPSCredential{
+				{Host: "github.com", Username: "host", Password: "host-token"},
+				{Host: "github.com", Path: "/infra", Username: "scoped", Password: "scoped-token"},
+			},
+			url:          "https://github.com/infrastructure/repo.git",
+			wantUsername: "host",
+		},
+		{
+			name: "the org itself still matches on the separator",
+			credentials: []HTTPSCredential{
+				{Host: "uniper.ghe.com", Path: "/COO", Username: "coo", Password: "coo-token"},
+			},
+			url:          "https://uniper.ghe.com/COO/mod.git",
+			wantUsername: "coo",
+		},
+		{
+			name: "an exact path match still counts",
+			credentials: []HTTPSCredential{
+				{Host: "github.com", Path: "/org/repo", Username: "u", Password: "p"},
+			},
+			url:          "https://github.com/org/repo",
+			wantUsername: "u",
+		},
+		{
+			name: "the real azure devops shape still matches",
+			credentials: []HTTPSCredential{
+				{Host: "dev.azure.com", Path: "/uniperteamservices", Username: "tok"},
+			},
+			url:          "https://dev.azure.com/uniperteamservices/C0315-Coode/_git/Common-Data",
+			wantUsername: "tok",
+		},
+		{
 			name:    "empty credentials",
 			url:     "https://github.com/user/repo",
 			wantNil: true,
