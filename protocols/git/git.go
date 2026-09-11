@@ -732,7 +732,7 @@ func (d *Downloader) transportOptions(s settings.Settings) ([]client.Option, err
 	if err != nil {
 		return nil, err
 	}
-	var base nethttp.RoundTripper = nethttp.DefaultTransport
+	base := nethttp.DefaultTransport
 	if tr != nil {
 		base = tr
 	}
