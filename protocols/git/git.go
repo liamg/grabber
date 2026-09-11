@@ -721,30 +721,44 @@ func (d *Downloader) tagMode() plumbing.TagMode {
 
 // transportOptions builds the non-authentication go-git client options for this
 // download: for HTTP(S) remotes, the CA bundle, client certificate, proxy and
-// SSRF-guarded dialer resolved from settings by host. The options are
-// per-clone, so there is no global transport state to race on.
+// SSRF-guarded dialer resolved from settings by host, all behind the error-body
+// stripper. The options are per-clone, so there is no global transport state to
+// race on.
 func (d *Downloader) transportOptions(s settings.Settings) ([]client.Option, error) {
+	if httpRemoteURL(d.repoURL) == nil {
+		return nil, nil
+	}
 	tr, err := httpTransportFor(d.repoURL, s)
 	if err != nil {
 		return nil, err
 	}
-	if tr == nil {
-		return nil, nil
+	var base nethttp.RoundTripper = nethttp.DefaultTransport
+	if tr != nil {
+		base = tr
 	}
-	return []client.Option{client.WithHTTPClient(&nethttp.Client{Transport: tr})}, nil
+	return []client.Option{client.WithHTTPClient(&nethttp.Client{Transport: errBodyStripper{base: base}})}, nil
+}
+
+// httpRemoteURL returns the parsed URL when the remote is fetched over HTTP(S),
+// and nil for SSH/SCP remotes, which do not use an HTTP transport.
+func httpRemoteURL(repoURL string) *url.URL {
+	if scpPattern.MatchString(repoURL) {
+		return nil
+	}
+	u, err := url.Parse(repoURL)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") {
+		return nil
+	}
+	return u
 }
 
 // httpTransportFor builds the HTTP transport for an HTTP(S) remote, layering the
 // configured CA pool, the client certificate matched to the host, the matched
 // proxy (including any proxy credentials) and the SSRF dial guard. It returns
-// nil for SSH/SCP remotes, which do not use an HTTP transport, and nil when
-// nothing is configured so go-git keeps its own default client.
+// nil for SSH/SCP remotes, and nil when nothing needs customising.
 func httpTransportFor(repoURL string, s settings.Settings) (*nethttp.Transport, error) {
-	if scpPattern.MatchString(repoURL) {
-		return nil, nil
-	}
-	u, err := url.Parse(repoURL)
-	if err != nil || (u.Scheme != "https" && u.Scheme != "http") {
+	u := httpRemoteURL(repoURL)
+	if u == nil {
 		return nil, nil
 	}
 	return s.TransportForHost(u.Hostname())
