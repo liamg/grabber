@@ -45,6 +45,15 @@ func TestParseGitURL(t *testing.T) {
 			wantDepth: 1,
 		},
 		{
+			// A bare "?" sets url.URL.ForceQuery, which String() re-emits even
+			// after RawQuery is cleared. go-git then appends its own
+			// "?service=...", giving "info/refs??service=git-upload-pack",
+			// which servers reject.
+			name:     "https with bare trailing question mark",
+			url:      "https://github.com/user/repo.git?",
+			wantRepo: "https://github.com/user/repo.git",
+		},
+		{
 			name:      "https with ref and depth",
 			url:       "https://github.com/user/repo.git?ref=main&depth=5",
 			wantRepo:  "https://github.com/user/repo.git",
