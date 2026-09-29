@@ -126,6 +126,7 @@ func parseGitURL(rawURL string, forced bool) (*Downloader, error) {
 	u.Path = repoPath
 	u.RawQuery = ""
 	u.Fragment = ""
+	u.ForceQuery = false
 
 	return &Downloader{
 		repoURL: u.String(),
