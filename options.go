@@ -335,3 +335,12 @@ func WithNoSystemFallback() Option {
 		g.settings.NoSystemFallback = true
 	}
 }
+
+// WithoutAmbientCredentials stops s3 and gcs downloads from using the default
+// SDK credential chain. Only credentials set via WithAWSCredentials or
+// WithGCPCredentials are used; otherwise requests are unauthenticated.
+func WithoutAmbientCredentials() Option {
+	return func(g *Grabber) {
+		g.settings.NoAmbientCredentials = true
+	}
+}
