@@ -9,6 +9,10 @@ import (
 	"testing"
 	"time"
 
+	gogit "github.com/go-git/go-git/v6"
+	"github.com/go-git/go-git/v6/config"
+	"github.com/go-git/go-git/v6/plumbing"
+	"github.com/go-git/go-git/v6/storage/memory"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
 
@@ -221,4 +225,51 @@ func TestDownload_GitOverHTTP_WithDepth(t *testing.T) {
 
 	assertFileContains(t, filepath.Join(dst, "file.txt"), "hello from http\n")
 	assertFileContains(t, filepath.Join(dst, "sub/extra.txt"), "second file\n")
+}
+
+func TestDownload_GitOverHTTP_PinnedCommit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	repoURL, cleanup := startGitHTTPServer(t)
+	defer cleanup()
+
+	// The fixture tags the first commit v1.0.0; pin to that commit's full hash.
+	remote := gogit.NewRemote(memory.NewStorage(), &config.RemoteConfig{
+		Name: gogit.DefaultRemoteName,
+		URLs: []string{repoURL},
+	})
+	refs, err := remote.List(&gogit.ListOptions{})
+	if err != nil {
+		t.Fatalf("listing refs: %v", err)
+	}
+	var first string
+	for _, ref := range refs {
+		if ref.Name() == plumbing.NewTagReferenceName("v1.0.0") {
+			first = ref.Hash().String()
+		}
+	}
+	if first == "" {
+		t.Fatal("tag v1.0.0 not advertised")
+	}
+
+	ran, ok := spyPinnedCommitClone(t)
+
+	dst := t.TempDir()
+	d := &Downloader{repoURL: repoURL, ref: first}
+
+	_, err = d.Download(context.Background(), dst, settings.Settings{SSRFLevel: ssrf.None})
+	if err != nil {
+		t.Fatalf("download: %v", err)
+	}
+
+	// The commit must have come from the fetch by hash, not a fallback to the
+	// full clone.
+	if !*ran || !*ok {
+		t.Fatalf("pinned-commit path ran=%v succeeded=%v, want both", *ran, *ok)
+	}
+	assertFileContains(t, filepath.Join(dst, "file.txt"), "hello from http\n")
+	assertFileContains(t, filepath.Join(dst, "sub/nested.txt"), "nested via http\n")
+	assertFileNotExists(t, filepath.Join(dst, "sub/extra.txt"))
 }
