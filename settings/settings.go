@@ -61,6 +61,11 @@ type Settings struct {
 	// that must not read the ambient user/system configuration.
 	NoSystemFallback bool
 
+	// NoAmbientCredentials stops s3 and gcs from using the default SDK
+	// credential chain (env, profile, instance role, ADC). Without explicit
+	// credentials, requests go out unauthenticated.
+	NoAmbientCredentials bool
+
 	// Working directory for intermediate files during download/extraction.
 	// Defaults to os.TempDir().
 	TemporaryDirectory string

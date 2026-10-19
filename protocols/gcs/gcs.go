@@ -188,8 +188,9 @@ func authOption(ctx context.Context, s settings.Settings, endpoint string) (opti
 		return option.WithTokenSource(creds.TokenSource), nil
 	}
 
-	if endpoint != "" {
-		// Custom endpoint (e.g. fake-gcs-server) — skip credential resolution.
+	if endpoint != "" || s.NoAmbientCredentials {
+		// Custom endpoint (e.g. fake-gcs-server), or ambient credentials are
+		// disabled — skip credential resolution.
 		return option.WithoutAuthentication(), nil
 	}
 

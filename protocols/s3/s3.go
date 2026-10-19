@@ -229,6 +229,8 @@ func (d *Downloader) newClient(ctx context.Context, s settings.Settings) (*s3.Cl
 				s.AWSCredentials.SessionToken,
 			),
 		))
+	} else if s.NoAmbientCredentials {
+		opts = append(opts, awsconfig.WithCredentialsProvider(aws.AnonymousCredentials{}))
 	}
 
 	cfg, err := awsconfig.LoadDefaultConfig(ctx, opts...)

@@ -288,3 +288,19 @@ func TestAuthOptionCustomEndpointSkipsADC(t *testing.T) {
 		t.Errorf("Authorization = %q, want no credentials to be sent", auth)
 	}
 }
+
+func TestAuthOptionWithoutAmbientCredentialsSkipsADC(t *testing.T) {
+	stubTokenSource(t, oauth2.StaticTokenSource(&oauth2.Token{
+		AccessToken: "adc-token",
+		TokenType:   "Bearer",
+	}), nil)
+
+	opt, err := authOption(context.Background(), settings.Settings{NoAmbientCredentials: true}, "")
+	if err != nil {
+		t.Fatalf("authOption: %v", err)
+	}
+
+	if _, auth := fetchWith(t, opt); auth != "" {
+		t.Errorf("Authorization = %q, want no credentials to be sent", auth)
+	}
+}
