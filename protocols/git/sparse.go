@@ -15,6 +15,8 @@ import (
 	"github.com/go-git/go-git/v6/plumbing/client"
 	"github.com/go-git/go-git/v6/plumbing/filemode"
 	"github.com/go-git/go-git/v6/plumbing/object"
+	"github.com/go-git/go-git/v6/plumbing/protocol"
+	"github.com/go-git/go-git/v6/plumbing/protocol/capability"
 	"github.com/go-git/go-git/v6/plumbing/protocol/packp"
 	"github.com/go-git/go-git/v6/plumbing/transport"
 
@@ -106,8 +108,7 @@ func (d *Downloader) sparseClone(ctx context.Context, cloneDir string, s setting
 	}
 	// A pinned commit is fetched by hash after this clone (see
 	// resolvePinnedCommit), so the clone only has to be a cheap anchor: one
-	// commit of the default branch. The non-partial path cannot do that — it has
-	// to find the commit locally — so it keeps full history and every ref.
+	// commit of the default branch.
 	attempts := d.cloneAttempts()
 	depth := d.resolveDepth(s)
 	if looksLikeCommitHash(d.ref) {
@@ -152,6 +153,11 @@ func (d *Downloader) sparseCommit(ctx context.Context, repo *git.Repository, cli
 	if d.ref != "" && looksLikeCommitHash(d.ref) {
 		hash, err := d.resolvePinnedCommit(ctx, repo, clientOpts)
 		if err != nil {
+			// A server that only serves advertised commits refuses this one
+			// whether or not it has it, so a full clone may still find it.
+			if errors.Is(err, errWantsRestricted) {
+				return plumbing.ZeroHash, fmt.Errorf("%w: resolving commit %s: %w", errSparseUnsupported, d.ref, err)
+			}
 			return plumbing.ZeroHash, fmt.Errorf("resolving commit %s: %w", d.ref, err)
 		}
 		return hash, nil
@@ -175,18 +181,25 @@ func (d *Downloader) resolvePinnedCommit(ctx context.Context, repo *git.Reposito
 		return hash, nil
 	}
 
-	if len(d.ref) < 40 {
-		// A short hash cannot be requested by name, so deepen the history with
-		// tree:0 — commit objects only, no trees or blobs — and match the prefix
-		// against that graph.
-		head, err := repo.Head()
-		if err != nil {
-			return plumbing.ZeroHash, fmt.Errorf("resolving HEAD: %w", err)
+	// A full hash names the commit outright, so request it directly.
+	if len(d.ref) == 40 {
+		hash := plumbing.NewHash(strings.ToLower(d.ref))
+		if err := d.ensureCommitTrees(ctx, repo, hash, clientOpts); err != nil {
+			return plumbing.ZeroHash, err
 		}
-		if err := fetchObjects(ctx, repo, d.repoURL,
-			[]plumbing.Hash{head.Hash()}, packp.FilterTreeDepth(0), 0, clientOpts); err != nil {
-			return plumbing.ZeroHash, fmt.Errorf("fetching commit graph: %w", err)
-		}
+		return hash, nil
+	}
+
+	// A short hash cannot be requested by name, so deepen the history with
+	// tree:0 — commit objects only, no trees or blobs — and match the prefix
+	// against that graph.
+	head, err := repo.Head()
+	if err != nil {
+		return plumbing.ZeroHash, fmt.Errorf("resolving HEAD: %w", err)
+	}
+	if err := fetchObjects(ctx, repo, d.repoURL,
+		[]plumbing.Hash{head.Hash()}, packp.FilterTreeDepth(0), 0, clientOpts); err != nil {
+		return plumbing.ZeroHash, fmt.Errorf("fetching commit graph: %w", err)
 	}
 
 	hash, err := resolveCommitHash(repo, d.ref)
@@ -208,8 +221,7 @@ func (d *Downloader) ensureCommitTrees(ctx context.Context, repo *git.Repository
 			return nil
 		}
 	}
-	return fetchObjects(ctx, repo, d.repoURL,
-		[]plumbing.Hash{hash}, packp.FilterBlobNone(), 1, clientOpts)
+	return fetchCommitByHash(ctx, repo, d.repoURL, hash, packp.FilterBlobNone(), 1, clientOpts)
 }
 
 // sparseEntry is one file to write to disk, at its path within the repository.
@@ -391,23 +403,43 @@ func fetchObjects(
 	}
 
 	cl := client.New(clientOpts...)
-	// Protocol is deliberately left unset so the client negotiates its default
-	// (v2, which is what carries object filters).
+	// Protocol v2 is requested explicitly; left unset, go-git speaks v0. Over v0
+	// a stock git server (git daemon, or upload-pack over ssh) refuses a want
+	// for any commit that is not a ref tip, so a pinned older commit could only
+	// be had by cloning everything. v2 also carries object filters. A server
+	// that does not speak v2 answers in v0, as before.
 	sess, err := cl.Handshake(ctx, &transport.Request{
-		URL:     u,
-		Command: transport.UploadPackService,
+		URL:      u,
+		Command:  transport.UploadPackService,
+		Protocol: fetchProtocol,
 	})
 	if err != nil {
 		return fmt.Errorf("handshake: %w", err)
 	}
 	defer func() { _ = sess.Close() }()
 
-	return sess.Fetch(ctx, repo.Storer, &transport.FetchRequest{
+	err = sess.Fetch(ctx, repo.Storer, &transport.FetchRequest{
 		Wants:  wants,
 		Filter: filter,
 		Depth:  depth,
 	})
+	// A server that serves any reachable commit (every v2 session, or a v0
+	// server configured to allow it) only refuses a want for a commit it does
+	// not have. Any other server also refuses commits it has but has not
+	// advertised, so its refusal says nothing about whether the commit exists.
+	if err != nil && !sess.Capabilities().Supports(capability.AllowReachableSHA1InWant) {
+		return fmt.Errorf("%w: %w", errWantsRestricted, err)
+	}
+	return err
 }
+
+// fetchProtocol is the wire protocol fetchObjects asks for, indirected through a
+// package variable so tests can stand in for a server that only speaks v0.
+var fetchProtocol = protocol.V2
+
+// errWantsRestricted marks a fetch failure from a server that only serves
+// advertised commits, so a refusal cannot be read as the commit being missing.
+var errWantsRestricted = errors.New("remote only serves advertised commits")
 
 // materialise writes the entries into destRoot, creating parent directories as
 // needed.

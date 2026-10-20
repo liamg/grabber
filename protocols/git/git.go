@@ -522,27 +522,53 @@ func (d *Downloader) cloneAndPrepare(ctx context.Context, tmpDir string, s setti
 		}
 	}
 
-	depth := d.resolveDepth(s)
-
-	cloneOpts := &git.CloneOptions{
-		URL:           d.repoURL,
-		ClientOptions: clientOpts,
-		Tags:          d.tagMode(),
-	}
-
-	if depth > 0 {
-		cloneOpts.Depth = depth
-	}
-
-	if s.Git.RecurseSubmodules {
-		cloneOpts.RecurseSubmodules = git.DefaultSubmoduleRecursionDepth
-	}
-
 	cloneDir := tmpDir
 
-	repo, err := cloneByAttempts(ctx, cloneDir, cloneOpts, d.cloneAttempts(), d.ref)
-	if err != nil {
-		return fmt.Errorf("cloning repo: %w", err)
+	// A full commit hash can be fetched by itself, which avoids the full clone's
+	// whole history and every ref. It falls through to the full clone only when
+	// the remote cannot serve the commit that way; a missing commit or a rejected
+	// credential would fail the full clone just the same, so those are returned.
+	var repo *git.Repository
+	pinned := d.pinnedCommitEligible()
+	if pinned {
+		var err error
+		repo, err = pinnedCommitCloneFunc(d, ctx, cloneDir, s, clientOpts)
+		if err != nil {
+			if !errors.Is(err, errPinnedFetchUnsupported) {
+				return fmt.Errorf("cloning repo: %w", err)
+			}
+			log.Printf("grabber: fetching commit %s by hash failed, falling back to a full clone: %v", d.ref, err)
+			if resetErr := resetDir(tmpDir); resetErr != nil {
+				return resetErr
+			}
+			repo, pinned = nil, false
+		}
+	}
+
+	if repo == nil {
+		depth := d.resolveDepth(s)
+
+		cloneOpts := &git.CloneOptions{
+			URL:           d.repoURL,
+			ClientOptions: clientOpts,
+			Tags:          d.tagMode(),
+		}
+
+		if depth > 0 {
+			cloneOpts.Depth = depth
+		}
+
+		// A commit hash is checked out after the clone, so its submodules are
+		// initialised after that checkout rather than here at the default branch.
+		if s.Git.RecurseSubmodules && !looksLikeCommitHash(d.ref) {
+			cloneOpts.RecurseSubmodules = git.DefaultSubmoduleRecursionDepth
+		}
+
+		var err error
+		repo, err = cloneByAttempts(ctx, cloneDir, cloneOpts, d.cloneAttempts(), d.ref)
+		if err != nil {
+			return fmt.Errorf("cloning repo: %w", err)
+		}
 	}
 
 	// If the ref is a commit hash or the fallback (no ref) was used with a non-branch/tag ref,
@@ -557,9 +583,25 @@ func (d *Downloader) cloneAndPrepare(ctx context.Context, tmpDir string, s setti
 			return err
 		}
 		if err := wt.Checkout(&git.CheckoutOptions{
-			Hash: hash,
+			Hash:  hash,
+			Force: pinned,
 		}); err != nil {
 			return fmt.Errorf("checking out commit %s: %w", d.ref, err)
+		}
+		// Submodules are initialised here, against the commit just checked out,
+		// rather than at clone time against the default branch.
+		if s.Git.RecurseSubmodules {
+			subs, err := wt.Submodules()
+			if err != nil {
+				return fmt.Errorf("reading submodules: %w", err)
+			}
+			if err := subs.UpdateContext(ctx, &git.SubmoduleUpdateOptions{
+				Init:              true,
+				RecurseSubmodules: git.DefaultSubmoduleRecursionDepth,
+				ClientOptions:     clientOpts,
+			}); err != nil {
+				return fmt.Errorf("updating submodules: %w", err)
+			}
 		}
 	}
 
@@ -652,9 +694,10 @@ func (d *Downloader) cloneAttempts() []cloneAttempt {
 	switch {
 	case looksLikeCommitHash(d.ref):
 		// A hash is not a ref name, so there is nothing to ask the server for by
-		// name. Every ref is fetched so the commit can be found locally. The
-		// partial-clone path narrows this (see sparseClone), because it can fetch
-		// the commit by hash instead.
+		// name. Every ref is fetched so the commit can be found locally. This is
+		// only reached for a short hash, or when the remote refuses to serve a
+		// full one by hash: otherwise the commit is fetched directly (see
+		// pinnedCommitClone and sparseClone).
 		return []cloneAttempt{{"", false}}
 	case d.ref == "":
 		return []cloneAttempt{{"", true}}
@@ -710,9 +753,9 @@ func qualifiedRefName(ref string) (plumbing.ReferenceName, bool) {
 // because it is requested explicitly.
 //
 // A commit hash is the exception: the commit has to be found locally, and one
-// reachable only from a tag would be unresolvable without them. The
-// partial-clone path overrides this (see sparseClone), because it can fetch the
-// commit by hash instead.
+// reachable only from a tag would be unresolvable without them. A full hash
+// normally skips this by fetching the commit directly (see pinnedCommitClone
+// and sparseClone).
 func (d *Downloader) tagMode() plumbing.TagMode {
 	if looksLikeCommitHash(d.ref) {
 		return plumbing.AllTags
@@ -1271,9 +1314,9 @@ func (d *Downloader) resolveDepth(s settings.Settings) int {
 	if s.Git.Depth > 0 {
 		return s.Git.Depth
 	}
-	// Commit hashes need history so the commit is reachable locally. The
-	// partial-clone path overrides this (see sparseClone), because it can fetch
-	// the commit by hash instead of searching for it.
+	// A short hash needs history so the commit can be matched locally. A full
+	// hash is normally fetched by itself (see pinnedCommitClone and
+	// sparseClone); this only applies when that is not possible.
 	if looksLikeCommitHash(d.ref) {
 		return 0
 	}
