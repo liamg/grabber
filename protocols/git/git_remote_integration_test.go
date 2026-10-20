@@ -10,8 +10,6 @@ import (
 	"time"
 
 	gogit "github.com/go-git/go-git/v6"
-	"github.com/go-git/go-git/v6/config"
-	"github.com/go-git/go-git/v6/plumbing"
 	"github.com/go-git/go-git/v6/storage/memory"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
@@ -51,6 +49,9 @@ git tag v1.0.0
 echo "second file" > sub/extra.txt
 git add .
 git commit -m "second commit"
+echo "third file" > third.txt
+git add .
+git commit -m "third commit"
 git push origin HEAD:main --tags
 cd /
 rm -rf /tmp/working
@@ -235,29 +236,29 @@ func TestDownload_GitOverHTTP_PinnedCommit(t *testing.T) {
 	repoURL, cleanup := startGitHTTPServer(t)
 	defer cleanup()
 
-	// The fixture tags the first commit v1.0.0; pin to that commit's full hash.
-	remote := gogit.NewRemote(memory.NewStorage(), &config.RemoteConfig{
-		Name: gogit.DefaultRemoteName,
-		URLs: []string{repoURL},
-	})
-	refs, err := remote.List(&gogit.ListOptions{})
+	// Pin to the second commit. No ref points to it, so the server never
+	// advertises it and it can only be served by hash.
+	listing, err := gogit.Clone(memory.NewStorage(), nil, &gogit.CloneOptions{URL: repoURL})
 	if err != nil {
-		t.Fatalf("listing refs: %v", err)
+		t.Fatalf("cloning to find the second commit: %v", err)
 	}
-	var first string
-	for _, ref := range refs {
-		if ref.Name() == plumbing.NewTagReferenceName("v1.0.0") {
-			first = ref.Hash().String()
-		}
+	head, err := listing.Head()
+	if err != nil {
+		t.Fatalf("head: %v", err)
 	}
-	if first == "" {
-		t.Fatal("tag v1.0.0 not advertised")
+	tip, err := listing.CommitObject(head.Hash())
+	if err != nil {
+		t.Fatalf("head commit: %v", err)
 	}
+	if tip.NumParents() != 1 {
+		t.Fatalf("head commit has %d parents, want 1", tip.NumParents())
+	}
+	second := tip.ParentHashes[0].String()
 
 	ran, ok := spyPinnedCommitClone(t)
 
 	dst := t.TempDir()
-	d := &Downloader{repoURL: repoURL, ref: first}
+	d := &Downloader{repoURL: repoURL, ref: second}
 
 	_, err = d.Download(context.Background(), dst, settings.Settings{SSRFLevel: ssrf.None})
 	if err != nil {
@@ -270,6 +271,6 @@ func TestDownload_GitOverHTTP_PinnedCommit(t *testing.T) {
 		t.Fatalf("pinned-commit path ran=%v succeeded=%v, want both", *ran, *ok)
 	}
 	assertFileContains(t, filepath.Join(dst, "file.txt"), "hello from http\n")
-	assertFileContains(t, filepath.Join(dst, "sub/nested.txt"), "nested via http\n")
-	assertFileNotExists(t, filepath.Join(dst, "sub/extra.txt"))
+	assertFileContains(t, filepath.Join(dst, "sub/extra.txt"), "second file\n")
+	assertFileNotExists(t, filepath.Join(dst, "third.txt"))
 }

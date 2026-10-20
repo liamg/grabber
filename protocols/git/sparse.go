@@ -153,6 +153,11 @@ func (d *Downloader) sparseCommit(ctx context.Context, repo *git.Repository, cli
 	if d.ref != "" && looksLikeCommitHash(d.ref) {
 		hash, err := d.resolvePinnedCommit(ctx, repo, clientOpts)
 		if err != nil {
+			// A server that only serves advertised commits refuses this one
+			// whether or not it has it, so a full clone may still find it.
+			if errors.Is(err, errWantsRestricted) {
+				return plumbing.ZeroHash, fmt.Errorf("%w: resolving commit %s: %w", errSparseUnsupported, d.ref, err)
+			}
 			return plumbing.ZeroHash, fmt.Errorf("resolving commit %s: %w", d.ref, err)
 		}
 		return hash, nil
@@ -176,18 +181,25 @@ func (d *Downloader) resolvePinnedCommit(ctx context.Context, repo *git.Reposito
 		return hash, nil
 	}
 
-	if len(d.ref) < 40 {
-		// A short hash cannot be requested by name, so deepen the history with
-		// tree:0 — commit objects only, no trees or blobs — and match the prefix
-		// against that graph.
-		head, err := repo.Head()
-		if err != nil {
-			return plumbing.ZeroHash, fmt.Errorf("resolving HEAD: %w", err)
+	// A full hash names the commit outright, so request it directly.
+	if len(d.ref) == 40 {
+		hash := plumbing.NewHash(strings.ToLower(d.ref))
+		if err := d.ensureCommitTrees(ctx, repo, hash, clientOpts); err != nil {
+			return plumbing.ZeroHash, err
 		}
-		if err := fetchObjects(ctx, repo, d.repoURL,
-			[]plumbing.Hash{head.Hash()}, packp.FilterTreeDepth(0), 0, clientOpts); err != nil {
-			return plumbing.ZeroHash, fmt.Errorf("fetching commit graph: %w", err)
-		}
+		return hash, nil
+	}
+
+	// A short hash cannot be requested by name, so deepen the history with
+	// tree:0 — commit objects only, no trees or blobs — and match the prefix
+	// against that graph.
+	head, err := repo.Head()
+	if err != nil {
+		return plumbing.ZeroHash, fmt.Errorf("resolving HEAD: %w", err)
+	}
+	if err := fetchObjects(ctx, repo, d.repoURL,
+		[]plumbing.Hash{head.Hash()}, packp.FilterTreeDepth(0), 0, clientOpts); err != nil {
+		return plumbing.ZeroHash, fmt.Errorf("fetching commit graph: %w", err)
 	}
 
 	hash, err := resolveCommitHash(repo, d.ref)
