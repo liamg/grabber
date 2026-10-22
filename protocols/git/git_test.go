@@ -234,6 +234,10 @@ func TestDetect(t *testing.T) {
 		{"gitlab archive", "https://gitlab.com/group/repo/-/archive/v1.0.0/repo-v1.0.0.zip", false},
 		{"gitlab release", "https://gitlab.com/group/sub/repo/-/releases/v1/downloads/file.tgz", false},
 		{"gitlab nested groups with a subdir", "https://gitlab.com/group/subgroup/repo//modules/vpc", true},
+		{"gitlab legacy raw", "https://gitlab.com/group/repo/raw/main/file.yaml", false},
+		{"gitlab legacy tree", "https://gitlab.com/group/sub/repo/tree/main", false},
+		{"gitlab legacy archive", "https://gitlab.com/group/repo/archive/v1.tar.gz", false},
+		{"gitlab group named like a route", "https://gitlab.com/tree/repo", true},
 	}
 
 	for _, tt := range tests {

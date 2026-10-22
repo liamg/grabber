@@ -251,11 +251,22 @@ func isGitURL(u *url.URL) bool {
 //     about it.
 //   - GitLab nests groups arbitrarily deeply, so depth says nothing, but it
 //     puts every route that isn't a repository behind a "-" segment
-//     ("group/repo/-/archive/...", "group/repo/-/releases").
+//     ("group/repo/-/archive/...", "group/repo/-/releases"). It still serves
+//     its older routes without one ("group/repo/raw/main/file", ".../tree/main",
+//     ".../archive/v1.tar.gz") and redirects them, so a path with one of
+//     those route names after at least a group and a name isn't a repository
+//     either. A subgroup with one of those names is refused too; that is rare,
+//     and "git::" still forces it.
 //   - For the rest the bar stays low: an owner and a name at the least.
 //
 // Under every host, a first segment the host keeps for itself (its API) is
 // never a repository.
+//
+// Whatever is refused here falls through to the HTTP protocol, which downloads
+// it. For a page URL pasted from a browser, such as GitHub's
+// ".../blob/main/README.md" or ".../tree/main/modules/vpc", that is the page's
+// HTML, not the repository: before, the clone failed instead. The way to name
+// a directory of a repository is "owner/name//modules/vpc?ref=main".
 func isRepoPath(host, p string) bool {
 	repoPath, _ := splitSubdir(p)
 	segments := strings.Split(strings.Trim(repoPath, "/"), "/")
@@ -266,13 +277,22 @@ func isRepoPath(host, p string) bool {
 	case "github.com", "bitbucket.org", "codeberg.org":
 		return len(segments) == 2
 	case "gitlab.com":
-		for _, seg := range segments {
-			if seg == "-" {
+		for i, seg := range segments {
+			if seg == "-" || (i >= 2 && gitlabLegacyRoutes[seg]) {
 				return false
 			}
 		}
 	}
 	return true
+}
+
+// gitlabLegacyRoutes are GitLab's routes from before it moved them behind "-".
+var gitlabLegacyRoutes = map[string]bool{
+	"raw":      true,
+	"blob":     true,
+	"tree":     true,
+	"archive":  true,
+	"releases": true,
 }
 
 // splitSubdir splits a path on "//" into the repo path and subdirectory.
