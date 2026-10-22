@@ -228,7 +228,7 @@ func isGitURL(u *url.URL) bool {
 	host := strings.ToLower(u.Hostname())
 	for _, known := range knownGitHosts {
 		if host == known {
-			return isRepoPath(u.Path)
+			return isRepoPath(host, u.Path)
 		}
 	}
 
@@ -236,23 +236,43 @@ func isGitURL(u *url.URL) bool {
 }
 
 // isRepoPath reports whether a path on a known Git host is shaped like a
-// repository's: an owner and a name at the least, and not under a segment the
-// host keeps for itself. The host alone is not enough to go on - every one of
-// these serves plenty that is not a repository - and without the path to
-// narrow it, this protocol claims those too, ahead of the one that could
-// actually fetch them.
+// repository's. The host alone is not enough to go on - every one of these
+// serves plenty that is not a repository, such as release downloads, source
+// archives and file views - and without the path to narrow it, this protocol
+// claims those too, ahead of the one that could actually fetch them. GitHub
+// release assets are the common case: Helm chart repositories hosted on GitHub
+// point every chart at one, like
+// "https://github.com/org/repo/releases/download/v1.0.0/chart-1.0.0.tgz".
 //
-// The bar is deliberately low. GitLab nests groups arbitrarily deeply, so there
-// is no upper bound on the segment count to check against, and a name that is
-// merely unusual should still be fetched; it is the paths that cannot be a
-// repository that this is here to turn away.
-func isRepoPath(p string) bool {
+// How a repository path looks depends on the host:
+//
+//   - GitHub, Bitbucket and Codeberg have no nesting: a repository is exactly
+//     owner/name, and anything deeper is a page or a file the host serves
+//     about it.
+//   - GitLab nests groups arbitrarily deeply, so depth says nothing, but it
+//     puts every route that isn't a repository behind a "-" segment
+//     ("group/repo/-/archive/...", "group/repo/-/releases").
+//   - For the rest the bar stays low: an owner and a name at the least.
+//
+// Under every host, a first segment the host keeps for itself (its API) is
+// never a repository.
+func isRepoPath(host, p string) bool {
 	repoPath, _ := splitSubdir(p)
 	segments := strings.Split(strings.Trim(repoPath, "/"), "/")
-	if len(segments) < 2 {
+	if len(segments) < 2 || reservedHostPaths[strings.ToLower(segments[0])] {
 		return false
 	}
-	return !reservedHostPaths[strings.ToLower(segments[0])]
+	switch host {
+	case "github.com", "bitbucket.org", "codeberg.org":
+		return len(segments) == 2
+	case "gitlab.com":
+		for _, seg := range segments {
+			if seg == "-" {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // splitSubdir splits a path on "//" into the repo path and subdirectory.

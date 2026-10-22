@@ -223,6 +223,17 @@ func TestDetect(t *testing.T) {
 		{"github api path", "https://github.com/api/v3/repos/user/repo", false},
 		{"known host, owner only", "https://gitlab.com/user", false},
 		{"archive parameter on a known host", "https://gitlab.com/group/repo?archive=tar.gz", false},
+		{"github release asset", "https://github.com/grafana/helm-charts/releases/download/helm-loki-6.55.0/loki-6.55.0.tgz", false},
+		{"github release asset, not an archive", "https://github.com/user/repo/releases/download/v1/index.yaml", false},
+		{"github source archive", "https://github.com/user/repo/archive/refs/tags/v1.0.0.tar.gz", false},
+		{"github file view", "https://github.com/user/repo/blob/main/README.md", false},
+		{"github with a subdir", "https://github.com/user/repo//modules/vpc", true},
+		{"github with a trailing slash", "https://github.com/user/repo/", true},
+		{"bitbucket download", "https://bitbucket.org/user/repo/downloads/file.zip", false},
+		{"codeberg release", "https://codeberg.org/user/repo/releases/download/v1/file.tgz", false},
+		{"gitlab archive", "https://gitlab.com/group/repo/-/archive/v1.0.0/repo-v1.0.0.zip", false},
+		{"gitlab release", "https://gitlab.com/group/sub/repo/-/releases/v1/downloads/file.tgz", false},
+		{"gitlab nested groups with a subdir", "https://gitlab.com/group/subgroup/repo//modules/vpc", true},
 	}
 
 	for _, tt := range tests {
@@ -239,13 +250,16 @@ func TestDetect(t *testing.T) {
 // Git protocol turns away has to be picked up by the protocol that can fetch
 // it, and the Git protocol is the one consulted first.
 func TestDetect_ArchiveGoesToHTTP(t *testing.T) {
-	const registryDownload = "https://gitlab.com/api/v4/packages/terraform/modules/v1/ns/name/aws/4.3.0/file?token=secret&archive=tgz"
-
-	if _, ok := New().Detect(registryDownload); ok {
-		t.Fatalf("Detect(%q) claimed a module registry download", registryDownload)
-	}
-	if _, ok := httpprotocol.New().Detect(registryDownload); !ok {
-		t.Fatalf("the HTTP protocol did not accept %q either; it would now be unfetchable", registryDownload)
+	for _, download := range []string{
+		"https://gitlab.com/api/v4/packages/terraform/modules/v1/ns/name/aws/4.3.0/file?token=secret&archive=tgz",
+		"https://github.com/grafana/helm-charts/releases/download/helm-loki-6.55.0/loki-6.55.0.tgz",
+	} {
+		if _, ok := New().Detect(download); ok {
+			t.Fatalf("Detect(%q) claimed a download", download)
+		}
+		if _, ok := httpprotocol.New().Detect(download); !ok {
+			t.Fatalf("the HTTP protocol did not accept %q either; it would now be unfetchable", download)
+		}
 	}
 	if New().Priority() <= httpprotocol.New().Priority() {
 		t.Fatal("the Git protocol no longer outranks HTTP; this test is guarding nothing")
