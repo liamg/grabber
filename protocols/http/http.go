@@ -164,12 +164,12 @@ func (d *Downloader) Download(ctx context.Context, tmpDir string, s settings.Set
 
 	// Fail fast if the host is unreachable, rather than hanging until the
 	// context deadline.
-	if err := s.ProbeConnect(ctx, req.URL.Hostname(), httpPort(req.URL)); err != nil {
+	if err := s.ProbeConnectFor(ctx, req.URL.Scheme, req.URL.Hostname(), httpPort(req.URL)); err != nil {
 		return false, err
 	}
 
 	client := http.DefaultClient
-	tr, err := s.TransportForHost(req.URL.Hostname())
+	tr, err := s.RoundTripperForHost(req.URL.Hostname())
 	if err != nil {
 		return false, fmt.Errorf("configuring HTTP transport: %w", err)
 	}

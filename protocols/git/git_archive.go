@@ -72,7 +72,7 @@ func (d *Downloader) fetchArchive(ctx context.Context, tmpDir string, s settings
 	if au, perr := url.Parse(aURL); perr == nil {
 		archiveHost = au.Hostname()
 	}
-	tr, err := s.TransportForHost(archiveHost)
+	tr, err := s.RoundTripperForHost(archiveHost)
 	if err != nil {
 		return fmt.Errorf("configuring archive transport: %w", err)
 	}

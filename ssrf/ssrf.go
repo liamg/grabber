@@ -13,6 +13,10 @@
 //     (each redirect re-dials and is re-checked).
 //   - CheckHost is a pre-fetch check for protocols that use their own transport
 //     (git via go-git, hg via a subprocess) and so never dial through DialContext.
+//
+// A request sent through a proxy is a third case: the proxy makes the
+// connection, so neither layer sees the target. CheckProxiedHost checks it
+// before the request is handed over.
 package ssrf
 
 import (
@@ -247,7 +251,8 @@ func isNumericHost(host string) bool {
 }
 
 func isNumericPart(s string) bool {
-	if len(s) > 2 && (strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X")) {
+	// A bare "0x" counts: BSD-style inet_aton reads it as 0.
+	if len(s) >= 2 && (strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X")) {
 		s = s[2:]
 		for _, r := range s {
 			if (r < '0' || r > '9') && (r < 'a' || r > 'f') && (r < 'A' || r > 'F') {

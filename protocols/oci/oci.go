@@ -143,7 +143,7 @@ func (d *Downloader) Download(ctx context.Context, tmpDir string, s settings.Set
 	// so oras's default retry-on-429/5xx behaviour is preserved and each retried
 	// attempt is re-dialed through the guard. A nil transport falls back to
 	// http.DefaultTransport inside retry.
-	tr, err := s.TransportForHost(d.registry)
+	tr, err := s.RoundTripperForHost(d.registry)
 	if err != nil {
 		return false, fmt.Errorf("configuring OCI transport: %w", err)
 	}
