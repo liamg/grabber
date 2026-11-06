@@ -169,6 +169,16 @@ func TestLookupCache(t *testing.T) {
 		t.Fatalf("calls = %v, want one lookup per name", calls)
 	}
 
+	// A failure other than "no such host" expires sooner than an answer.
+	nowMu.Lock()
+	now = now.Add(lookupErrorTTL + time.Second)
+	nowMu.Unlock()
+	_, _ = c.lookup(ctx, "down.example", time.Second)
+	_, _ = c.lookup(ctx, "ok.example", time.Second)
+	if calls["down.example"] != 2 || calls["ok.example"] != 1 {
+		t.Fatalf("a failure must expire after lookupErrorTTL and an answer must not, calls = %v", calls)
+	}
+
 	nowMu.Lock()
 	now = now.Add(lookupCacheTTL + time.Second)
 	nowMu.Unlock()
@@ -250,8 +260,8 @@ func TestCheckProxiedHost_BothIDNAForms(t *testing.T) {
 }
 
 // A name the resolver does not know is allowed (only the proxy may have DNS), but
-// any other lookup failure is refused unless this machine has no working DNS at
-// all, so stalling a lookup does not skip the check of what a name resolves to.
+// any other lookup failure is refused unless a lookup of a well-known public name
+// fails too, so stalling a lookup does not skip the check of what a name resolves to.
 func TestCheckProxiedHost_LookupFailures(t *testing.T) {
 	notFound := &net.DNSError{Err: "no such host", IsNotFound: true}
 	timeout := &net.DNSError{Err: "i/o timeout", IsTimeout: true, IsTemporary: true}
@@ -267,12 +277,12 @@ func TestCheckProxiedHost_LookupFailures(t *testing.T) {
 		wantProbe bool // whether the probe is consulted at all
 	}{
 		{name: "no such host", target: notFound, wantAllow: true},
-		{name: "timeout on a machine with working DNS", target: timeout, probe: notFound, wantProbe: true},
-		{name: "server failure on a machine with working DNS", target: servfail, probe: notFound, wantProbe: true},
+		{name: "timeout where the probe name resolves: DNS works, so refuse", target: timeout, probeIPs: public, wantProbe: true},
+		{name: "server failure where the probe name resolves", target: servfail, probeIPs: public, wantProbe: true},
 		{name: "timeout where the probe also times out: no DNS at all", target: timeout, probe: timeout, wantAllow: true, wantProbe: true},
 		{name: "server failure where the probe fails too", target: servfail, probe: servfail, wantAllow: true, wantProbe: true},
 		{name: "plain error where the probe fails too", target: errors.New("boom"), probe: errors.New("boom"), wantAllow: true, wantProbe: true},
-		{name: "a resolver that answers the probe name is a working one", target: timeout, probeIPs: public, wantProbe: true},
+		{name: "probe says no such host: no external DNS", target: timeout, probe: notFound, wantAllow: true, wantProbe: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

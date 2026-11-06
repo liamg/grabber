@@ -291,8 +291,8 @@ non-canonical IPv4 literal (`2852039166`, `127.1`, `0x7f.0.0.1`), or a name
 where any resolved address is blocked is refused. A name this machine's resolver
 does not know ("no such host") is allowed, since where only the proxy has DNS
 that is every external host. Any other lookup failure, such as a timeout, is
-refused unless the machine has no working DNS at all, so stalling a lookup does
-not skip the check. The proxy can still resolve an allowed name to an internal
+refused unless a lookup of a well-known public name fails too (the machine
+appears to have no external DNS), so stalling a lookup does not skip the check. The proxy can still resolve an allowed name to an internal
 address, which the guard cannot see (and whoever runs a domain's DNS can answer
 this machine and the proxy differently); allowlist what you trust with
 `WithSSRFAllowHosts`. Note that reaching an internal name through a proxy,

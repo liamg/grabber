@@ -13,6 +13,9 @@ const (
 	// each redirect hop) and a runner without DNS would otherwise wait out the
 	// lookup timeout for every one.
 	lookupCacheTTL = 30 * time.Second
+	// lookupErrorTTL is how long a failure other than "no such host" is reused. It
+	// is short so that one passing resolver hiccup does not refuse a host for long.
+	lookupErrorTTL = 5 * time.Second
 	// lookupCacheMax bounds the cache; it is cleared when full.
 	lookupCacheMax = 1024
 )
@@ -82,7 +85,11 @@ func (c *lookupCache) run(lookup func(context.Context, string) ([]net.IPAddr, er
 	defer cancel()
 	addrs, err := lookup(ctx, host)
 
-	call.res = lookupResult{addrs: addrs, err: err, expires: c.now().Add(lookupCacheTTL)}
+	ttl := lookupCacheTTL
+	if err != nil && !isNotFound(err) {
+		ttl = lookupErrorTTL
+	}
+	call.res = lookupResult{addrs: addrs, err: err, expires: c.now().Add(ttl)}
 	c.mu.Lock()
 	if c.entries == nil || len(c.entries) >= lookupCacheMax {
 		c.entries = map[string]lookupResult{}
