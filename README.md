@@ -281,8 +281,22 @@ works at two layers: a dialer check on the HTTP/OCI transports (which catches DN
 rebinding and redirect-to-internal, since each dial is re-checked on the resolved
 IP), and a pre-fetch host check for Git and Mercurial (which use their own
 transports). s3/gcs only ever connect to fixed cloud endpoints, so they are not
-guarded. A configured proxy is exempt (the connection goes to the trusted proxy,
-not the target).
+guarded. A proxy is exempt (the connection goes to the trusted proxy, not the
+target), whether set with `WithHTTPProxyForHost` or taken from `HTTPS_PROXY` /
+`HTTP_PROXY` (honouring `NO_PROXY`), so a proxy on a private address works.
+
+Because the proxy makes the connection to the target, the guard checks the
+target itself before handing the request over: an internal address, a
+non-canonical IPv4 literal (`2852039166`, `127.1`, `0x7f.0.0.1`), or a name
+where any resolved address is blocked is refused. A name this machine's resolver
+does not know ("no such host") is allowed, since where only the proxy has DNS
+that is every external host. Any other lookup failure, such as a timeout, is
+refused unless a lookup of a well-known public name fails too (the machine
+appears to have no external DNS), so stalling a lookup does not skip the check. The proxy can still resolve an allowed name to an internal
+address, which the guard cannot see (and whoever runs a domain's DNS can answer
+this machine and the proxy differently); allowlist what you trust with
+`WithSSRFAllowHosts`. Note that reaching an internal name through a proxy,
+including a public one, now needs the name on that allowlist.
 
 > **Note:** the default blocks `127.0.0.1`/`localhost`, so tests or tools that
 > fetch from a local server must pass `WithSSRFProtection(ssrf.None)`.

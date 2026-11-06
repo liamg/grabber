@@ -341,7 +341,7 @@ func (d *Downloader) Download(ctx context.Context, tmpDir string, s settings.Set
 		// Fail fast (and fall back promptly) if the host is unreachable, rather
 		// than waiting for the clone to time out.
 		host, port := gitHostPort(cand)
-		if probeErr := s.ProbeConnect(ctx, host, port); probeErr != nil {
+		if probeErr := s.ProbeConnectFor(ctx, gitURLScheme(cand), host, port); probeErr != nil {
 			errs = append(errs, probeErr)
 			continue
 		}
@@ -468,7 +468,8 @@ func resetDir(dir string) error {
 func (d *Downloader) gitDownload(ctx context.Context, tmpDir string, s settings.Settings) error {
 	// go-git dials directly (not through our transport), so apply the SSRF guard
 	// as a pre-fetch check on the repo host.
-	if err := s.CheckSSRFHost(ctx, gitURLHost(d.repoURL)); err != nil {
+	_, port := gitHostPort(d.repoURL)
+	if err := s.CheckSSRFHostFor(ctx, gitURLScheme(d.repoURL), gitURLHost(d.repoURL), port); err != nil {
 		return err
 	}
 
@@ -812,13 +813,15 @@ func (d *Downloader) transportOptions(s settings.Settings) ([]client.Option, err
 	if httpRemoteURL(d.repoURL) == nil {
 		return nil, nil
 	}
-	tr, err := httpTransportFor(d.repoURL, s)
+	// RoundTripperForHost also lets a request the environment sends through a
+	// proxy reach that proxy, and checks its target first.
+	rt, err := s.RoundTripperForHost(httpRemoteURL(d.repoURL).Hostname())
 	if err != nil {
 		return nil, err
 	}
 	base := nethttp.DefaultTransport
-	if tr != nil {
-		base = tr
+	if rt != nil {
+		base = rt
 	}
 	return []client.Option{client.WithHTTPClient(&nethttp.Client{Transport: errBodyStripper{base: base}})}, nil
 }
@@ -839,7 +842,9 @@ func httpRemoteURL(repoURL string) *url.URL {
 // httpTransportFor builds the HTTP transport for an HTTP(S) remote, layering the
 // configured CA pool, the client certificate matched to the host, the matched
 // proxy (including any proxy credentials) and the SSRF dial guard. It returns
-// nil for SSH/SCP remotes, and nil when nothing needs customising.
+// nil for SSH/SCP remotes, and nil when nothing needs customising. It returns
+// the transport as TransportForHost builds it, for the TLS tests to inspect;
+// transportOptions goes through Settings.RoundTripperForHost, which wraps it.
 func httpTransportFor(repoURL string, s settings.Settings) (*nethttp.Transport, error) {
 	u := httpRemoteURL(repoURL)
 	if u == nil {
@@ -1215,6 +1220,15 @@ func gitCredentialFill(ctx context.Context, protocol, host, username string) *ht
 		Username: gotUser,
 		Password: gotPass,
 	}
+}
+
+// gitURLScheme returns "http" or "https" for a remote fetched over HTTP(S), and
+// "" for SSH/SCP and local remotes.
+func gitURLScheme(rawURL string) string {
+	if u := httpRemoteURL(rawURL); u != nil {
+		return u.Scheme
+	}
+	return ""
 }
 
 // gitURLHost extracts the network host from any Git URL form (ssh, scp, https).

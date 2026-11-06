@@ -524,6 +524,40 @@ func (s Settings) TransportForHost(host string) (*http.Transport, error) {
 	return base, nil
 }
 
+// RoundTripperForHost is TransportForHost for callers that only need a
+// http.RoundTripper. On top of it, when the SSRF guard is on and the transport
+// takes its proxy from the environment (HTTPS_PROXY / HTTP_PROXY, honouring
+// NO_PROXY), it lets requests the environment routes through a proxy reach that
+// proxy even if it sits on a private address, and checks the request's target
+// first because the proxy makes that connection (see Guard.CheckProxiedHost). A
+// proxy set through grabber's own options is handled by TransportForHost.
+//
+// It returns (nil, nil) when nothing is configured, like TransportForHost.
+func (s Settings) RoundTripperForHost(host string) (http.RoundTripper, error) {
+	tr, err := s.TransportForHost(host)
+	if err != nil {
+		return nil, err
+	}
+	return s.withEnvProxy(tr, host), nil
+}
+
+// withEnvProxy applies RoundTripperForHost's environment-proxy handling to a
+// transport already built by TransportForHost for host. It returns nil for a
+// nil transport, and the transport itself when no environment proxy is in play.
+// Otherwise tr is modified in place (its Proxy and DialContext are replaced). It
+// applies to any transport with a Proxy function, including a fixed proxy set on
+// one passed to WithHTTPTransport.
+func (s Settings) withEnvProxy(tr *http.Transport, host string) http.RoundTripper {
+	if tr == nil {
+		return nil
+	}
+	guard := s.SSRFGuard()
+	if !guard.Enabled() || tr.Proxy == nil || s.MatchProxy(host) != nil {
+		return tr
+	}
+	return newEnvProxyTransport(tr, guard)
+}
+
 // SSRFGuard returns the SSRF guard for these settings (zero level resolves to
 // ssrf.Internal).
 func (s Settings) SSRFGuard() *ssrf.Guard {
@@ -557,10 +591,18 @@ func (s Settings) RequestCredential(ctx context.Context, protocol, host, path st
 // empty, or a proxy is configured for the host (the real target is not dialed
 // directly in that case).
 func (s Settings) ProbeConnect(ctx context.Context, host, port string) error {
+	return s.ProbeConnectFor(ctx, "", host, port)
+}
+
+// ProbeConnectFor is ProbeConnect for a fetch of scheme://host:port. It also
+// skips the probe when that request goes through a proxy taken from the
+// environment, because the target is then dialed by the proxy and a direct
+// connection to it may be impossible from here.
+func (s Settings) ProbeConnectFor(ctx context.Context, scheme, host, port string) error {
 	if s.ConnectProbeTimeout <= 0 || host == "" || port == "" {
 		return nil
 	}
-	if s.MatchProxy(host) != nil {
+	if s.MatchProxy(host) != nil || s.envProxyApplies(scheme, host, port) {
 		return nil
 	}
 	dialer := net.Dialer{Timeout: s.ConnectProbeTimeout}
@@ -584,4 +626,16 @@ func (s Settings) ProbeConnect(ctx context.Context, host, port string) error {
 // the guard is disabled or the host is allowed.
 func (s Settings) CheckSSRFHost(ctx context.Context, host string) error {
 	return s.SSRFGuard().CheckHost(ctx, host)
+}
+
+// CheckSSRFHostFor is CheckSSRFHost for a fetch of scheme://host[:port]; port may
+// be empty. When the environment sends that request through a proxy the check is
+// the proxy-aware one (Guard.CheckProxiedHost): a name this machine cannot
+// resolve is allowed, because only the proxy has DNS, and the target is judged
+// as the proxy will see it.
+func (s Settings) CheckSSRFHostFor(ctx context.Context, scheme, host, port string) error {
+	if s.envProxyApplies(scheme, host, port) {
+		return s.SSRFGuard().CheckProxiedHost(ctx, host)
+	}
+	return s.CheckSSRFHost(ctx, host)
 }
