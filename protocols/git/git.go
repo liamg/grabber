@@ -813,14 +813,14 @@ func (d *Downloader) transportOptions(s settings.Settings) ([]client.Option, err
 	if httpRemoteURL(d.repoURL) == nil {
 		return nil, nil
 	}
-	tr, err := httpTransportFor(d.repoURL, s)
+	// RoundTripperForHost also lets a request the environment sends through a
+	// proxy reach that proxy, and checks its target first.
+	rt, err := s.RoundTripperForHost(httpRemoteURL(d.repoURL).Hostname())
 	if err != nil {
 		return nil, err
 	}
 	base := nethttp.DefaultTransport
-	// WithEnvProxy also lets a request the environment sends through a proxy
-	// reach that proxy, and checks its target first.
-	if rt := s.WithEnvProxy(tr, httpRemoteURL(d.repoURL).Hostname()); rt != nil {
+	if rt != nil {
 		base = rt
 	}
 	return []client.Option{client.WithHTTPClient(&nethttp.Client{Transport: errBodyStripper{base: base}})}, nil
@@ -842,7 +842,9 @@ func httpRemoteURL(repoURL string) *url.URL {
 // httpTransportFor builds the HTTP transport for an HTTP(S) remote, layering the
 // configured CA pool, the client certificate matched to the host, the matched
 // proxy (including any proxy credentials) and the SSRF dial guard. It returns
-// nil for SSH/SCP remotes, and nil when nothing needs customising.
+// nil for SSH/SCP remotes, and nil when nothing needs customising. It returns
+// the transport as TransportForHost builds it, for the TLS tests to inspect;
+// transportOptions goes through Settings.RoundTripperForHost, which wraps it.
 func httpTransportFor(repoURL string, s settings.Settings) (*nethttp.Transport, error) {
 	u := httpRemoteURL(repoURL)
 	if u == nil {

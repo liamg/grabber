@@ -288,12 +288,15 @@ target), whether set with `WithHTTPProxyForHost` or taken from `HTTPS_PROXY` /
 Because the proxy makes the connection to the target, the guard checks the
 target itself before handing the request over: an internal address, a
 non-canonical IPv4 literal (`2852039166`, `127.1`, `0x7f.0.0.1`), or a name
-where any resolved address is blocked is refused. A name this machine cannot
-resolve is allowed, since where only the proxy has DNS that is every external
-host. The proxy can still resolve an allowed name to an internal address, which
-the guard cannot see; allowlist what you trust with `WithSSRFAllowHosts`. Note
-that reaching an internal name through a proxy, including a public one, now
-needs the name on that allowlist.
+where any resolved address is blocked is refused. A name this machine's resolver
+does not know ("no such host") is allowed, since where only the proxy has DNS
+that is every external host. Any other lookup failure, such as a timeout, is
+refused unless the machine has no working DNS at all, so stalling a lookup does
+not skip the check. The proxy can still resolve an allowed name to an internal
+address, which the guard cannot see (and whoever runs a domain's DNS can answer
+this machine and the proxy differently); allowlist what you trust with
+`WithSSRFAllowHosts`. Note that reaching an internal name through a proxy,
+including a public one, now needs the name on that allowlist.
 
 > **Note:** the default blocks `127.0.0.1`/`localhost`, so tests or tools that
 > fetch from a local server must pass `WithSSRFProtection(ssrf.None)`.

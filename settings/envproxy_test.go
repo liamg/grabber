@@ -383,3 +383,38 @@ func TestProbeConnectFor_SkipsEnvProxiedHosts(t *testing.T) {
 		t.Fatal("an ssh probe is direct and must still be guarded")
 	}
 }
+
+// The decision to skip the direct probe and use the proxy-aware check must come
+// from the same transport that TransportForHost builds on, not from the process
+// environment: an embedding application may have replaced http.DefaultTransport.
+func TestEnvProxyApplies_UsesTheBaseTransportsProxy(t *testing.T) {
+	orig := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = orig })
+	proxyURL, _ := url.Parse("http://proxy.example:3128")
+
+	http.DefaultTransport = &http.Transport{Proxy: http.ProxyURL(proxyURL)}
+	if !(Settings{}).envProxyApplies("https", "github.com", "") {
+		t.Error("a default transport with a proxy must count")
+	}
+
+	http.DefaultTransport = &http.Transport{} // replaced by one with no proxy
+	if (Settings{}).envProxyApplies("https", "github.com", "") {
+		t.Error("a default transport with no proxy must not count, whatever the environment says")
+	}
+
+	http.DefaultTransport = roundTripperFunc(func(*http.Request) (*http.Response, error) { return nil, nil })
+	if (Settings{}).envProxyApplies("https", "github.com", "") {
+		t.Error("a default transport that is not an *http.Transport has no proxy to read")
+	}
+
+	// A transport supplied to WithHTTPTransport wins over the default.
+	http.DefaultTransport = &http.Transport{}
+	own := Settings{HTTPTransport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}}
+	if !own.envProxyApplies("https", "github.com", "") {
+		t.Error("the transport passed to WithHTTPTransport must be the base")
+	}
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }

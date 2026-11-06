@@ -248,3 +248,65 @@ func TestCheckProxiedHost_BothIDNAForms(t *testing.T) {
 		t.Fatalf("expected the punycode form to be refused, got %v", err)
 	}
 }
+
+// A name the resolver does not know is allowed (only the proxy may have DNS), but
+// any other lookup failure is refused unless this machine has no working DNS at
+// all, so stalling a lookup does not skip the check of what a name resolves to.
+func TestCheckProxiedHost_LookupFailures(t *testing.T) {
+	notFound := &net.DNSError{Err: "no such host", IsNotFound: true}
+	timeout := &net.DNSError{Err: "i/o timeout", IsTimeout: true, IsTemporary: true}
+	servfail := &net.DNSError{Err: "server misbehaving", IsTemporary: true}
+	public := []net.IPAddr{{IP: net.ParseIP("203.0.113.10")}}
+
+	tests := []struct {
+		name      string
+		target    error
+		probe     error        // what the probe name returns
+		probeIPs  []net.IPAddr // set instead of probe when the resolver answers it
+		wantAllow bool
+		wantProbe bool // whether the probe is consulted at all
+	}{
+		{name: "no such host", target: notFound, wantAllow: true},
+		{name: "timeout on a machine with working DNS", target: timeout, probe: notFound, wantProbe: true},
+		{name: "server failure on a machine with working DNS", target: servfail, probe: notFound, wantProbe: true},
+		{name: "timeout where the probe also times out: no DNS at all", target: timeout, probe: timeout, wantAllow: true, wantProbe: true},
+		{name: "server failure where the probe fails too", target: servfail, probe: servfail, wantAllow: true, wantProbe: true},
+		{name: "plain error where the probe fails too", target: errors.New("boom"), probe: errors.New("boom"), wantAllow: true, wantProbe: true},
+		{name: "a resolver that answers the probe name is a working one", target: timeout, probeIPs: public, wantProbe: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var mu sync.Mutex
+			asked := map[string]int{}
+			stubLookup(t, func(_ context.Context, name string) ([]net.IPAddr, error) {
+				mu.Lock()
+				asked[name]++
+				mu.Unlock()
+				if name == dnsProbeName {
+					return tt.probeIPs, tt.probe
+				}
+				return nil, tt.target
+			})
+
+			err := New(Default, nil).CheckProxiedHost(context.Background(), "registry.example.com")
+			if tt.wantAllow && err != nil {
+				t.Fatalf("expected the host to be allowed, got %v", err)
+			}
+			if !tt.wantAllow && err == nil {
+				t.Fatal("expected the failed lookup to be refused")
+			}
+			if got := asked[dnsProbeName] > 0; got != tt.wantProbe {
+				t.Fatalf("probe consulted = %v, want %v", got, tt.wantProbe)
+			}
+		})
+	}
+
+	t.Run("a caller that has gone is not a reason to refuse", func(t *testing.T) {
+		stubLookup(t, func(context.Context, string) ([]net.IPAddr, error) { return nil, timeout })
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if err := New(Default, nil).CheckProxiedHost(ctx, "registry.example.com"); err != nil {
+			t.Fatalf("got %v", err)
+		}
+	})
+}

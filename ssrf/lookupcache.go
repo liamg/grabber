@@ -63,7 +63,7 @@ func (c *lookupCache) lookup(ctx context.Context, host string, timeout time.Dura
 			c.inflight = map[string]*lookupCall{}
 		}
 		c.inflight[host] = call
-		go c.run(host, timeout, call)
+		go c.run(lookupIPAddr, host, timeout, call)
 	}
 	c.mu.Unlock()
 
@@ -75,12 +75,12 @@ func (c *lookupCache) lookup(ctx context.Context, host string, timeout time.Dura
 	}
 }
 
-func (c *lookupCache) run(host string, timeout time.Duration, call *lookupCall) {
+func (c *lookupCache) run(lookup func(context.Context, string) ([]net.IPAddr, error), host string, timeout time.Duration, call *lookupCall) {
 	// Waiters block on done, so it must close even if the lookup panics.
 	defer close(call.done)
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	addrs, err := lookupIPAddr(ctx, host)
+	addrs, err := lookup(ctx, host)
 
 	call.res = lookupResult{addrs: addrs, err: err, expires: c.now().Add(lookupCacheTTL)}
 	c.mu.Lock()

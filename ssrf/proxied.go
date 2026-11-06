@@ -2,6 +2,7 @@ package ssrf
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -34,15 +35,19 @@ var lookupIPAddr = net.DefaultResolver.LookupIPAddr
 //     asciiForms). A host with an empty label ("10.0.0..1") is refused: no real
 //     host has one.
 //   - A name is refused if any address it resolves to is blocked, because a proxy
-//     may pick that one (CheckHost allows a name with one allowed address).
+//     may pick that one (CheckHost allows a name with one allowed address). A
+//     lookup that fails is refused too, unless the resolver does not know the name
+//     or this machine has no working DNS (see lookupFailureAllowed).
 //   - NAT64 (64:ff9b::/96), 6to4 (2002::/16) and IPv4-compatible (::a.b.c.d)
 //     addresses are judged by the IPv4 address they carry.
 //
-// A name the caller cannot resolve is allowed, and so is one whose lookup times
-// out or fails: where only the proxy has DNS that is every external host. The
-// proxy can still resolve such a name to an internal address, or be rebound
-// after this check; that risk is inherent to using a proxy and is not closed
-// here.
+// A name the caller's resolver does not know is allowed: where only the proxy has
+// DNS that is every external host. The proxy can still resolve such a name to an
+// internal address, or be rebound after this check, and whoever runs a domain's
+// DNS can answer the caller and the proxy differently; that risk is inherent to
+// using a proxy and is not closed here. A lookup that fails some other way, a
+// timeout or a server failure, is refused unless this machine has no working DNS
+// at all.
 func (g *Guard) CheckProxiedHost(ctx context.Context, host string) error {
 	if !g.Enabled() || host == "" {
 		return nil
@@ -96,6 +101,31 @@ func asciiForms(host string) ([]string, error) {
 	return forms, nil
 }
 
+// dnsProbeName is a name no resolver can answer: .invalid is reserved (RFC 6761).
+// A working resolver reports "no such host" for it, so any other failure means
+// this machine has no working DNS.
+const dnsProbeName = "grabber-dns-probe.invalid"
+
+// lookupFailureAllowed reports whether a failed lookup of a proxied host may
+// proceed to the proxy. A name this machine's resolver does not know ("no such
+// host") is allowed: where only the proxy has DNS, that is every external host.
+// Any other failure, such as a timeout or a server failure, is allowed only when
+// the machine has no working DNS at all. Otherwise whoever controls a domain's
+// DNS could make the lookup stall or fail to skip the check of what it resolves
+// to.
+func lookupFailureAllowed(ctx context.Context, err error) bool {
+	if isNotFound(err) {
+		return true
+	}
+	_, probeErr := sharedLookups.lookup(ctx, dnsProbeName, proxiedLookupTimeout)
+	return probeErr != nil && !isNotFound(probeErr)
+}
+
+func isNotFound(err error) bool {
+	var dnsErr *net.DNSError
+	return errors.As(err, &dnsErr) && dnsErr.IsNotFound
+}
+
 // checkProxiedASCII is CheckProxiedHost for one normalized ASCII spelling.
 func (g *Guard) checkProxiedASCII(ctx context.Context, host string) error {
 	if g.hostAllowed(host) {
@@ -115,6 +145,9 @@ func (g *Guard) checkProxiedASCII(ctx context.Context, host string) error {
 
 	addrs, err := sharedLookups.lookup(ctx, strings.ToLower(host), proxiedLookupTimeout)
 	if err != nil {
+		if ctx.Err() == nil && !lookupFailureAllowed(ctx, err) {
+			return fmt.Errorf("ssrf guard: cannot check host %q: %w", host, err)
+		}
 		return nil
 	}
 	for _, a := range addrs {

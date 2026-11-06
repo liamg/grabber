@@ -110,6 +110,20 @@ func (t *envProxyTransport) CloseIdleConnections() {
 	t.inner.CloseIdleConnections()
 }
 
+// baseProxy returns the Proxy function of the transport TransportForHost builds
+// on: the one passed to WithHTTPTransport, else http.DefaultTransport's (which an
+// embedding application may have replaced). It is nil when that transport has
+// none.
+func (s Settings) baseProxy() func(*http.Request) (*url.URL, error) {
+	if s.HTTPTransport != nil {
+		return s.HTTPTransport.Proxy
+	}
+	if dt, ok := http.DefaultTransport.(*http.Transport); ok {
+		return dt.Proxy
+	}
+	return nil
+}
+
 // envProxyApplies reports whether a request to scheme://host[:port] would go
 // through a proxy taken from the environment rather than one configured on the
 // settings. port may be empty.
@@ -120,10 +134,7 @@ func (s Settings) envProxyApplies(scheme, host, port string) bool {
 	if s.MatchProxy(host) != nil {
 		return false
 	}
-	proxy := http.ProxyFromEnvironment
-	if s.HTTPTransport != nil {
-		proxy = s.HTTPTransport.Proxy
-	}
+	proxy := s.baseProxy()
 	if proxy == nil {
 		return false
 	}

@@ -538,16 +538,16 @@ func (s Settings) RoundTripperForHost(host string) (http.RoundTripper, error) {
 	if err != nil {
 		return nil, err
 	}
-	return s.WithEnvProxy(tr, host), nil
+	return s.withEnvProxy(tr, host), nil
 }
 
-// WithEnvProxy applies RoundTripperForHost's environment-proxy handling to a
+// withEnvProxy applies RoundTripperForHost's environment-proxy handling to a
 // transport already built by TransportForHost for host. It returns nil for a
 // nil transport, and the transport itself when no environment proxy is in play.
-// Otherwise tr is modified in place (its Proxy and DialContext are replaced), so
-// call it once per transport. It applies to any transport with a Proxy function,
-// including a fixed proxy set on one passed to WithHTTPTransport.
-func (s Settings) WithEnvProxy(tr *http.Transport, host string) http.RoundTripper {
+// Otherwise tr is modified in place (its Proxy and DialContext are replaced). It
+// applies to any transport with a Proxy function, including a fixed proxy set on
+// one passed to WithHTTPTransport.
+func (s Settings) withEnvProxy(tr *http.Transport, host string) http.RoundTripper {
 	if tr == nil {
 		return nil
 	}
